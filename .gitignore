@@ -274,3 +274,6 @@ receiver.dat
 
 *.err
 benchmark_comparison.png
+build-openmp/
+scripts/benchmarks/plots/*.png
+scripts/benchmarks/results/*.csv
