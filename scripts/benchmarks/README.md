@@ -61,10 +61,64 @@ where `T_with` is the average SEM time with snapshots and `T_without` is the ave
 
 bandwidth = snapshot CSV size / SEM Output time
 
-
 The bandwidth is reported in **MiB/s**.
 
 The SEM Output time also contains other output operations, so this value is an **effective I/O bandwidth**, not an isolated measurement of `saveSnapshot()`.
+
+## Mesh and ad hoc workflow benchmark
+
+The second benchmark is implemented in:
+
+scripts/benchmarks/run_two.py
+
+It studies the influence of the SEM mesh size while keeping the execution fixed at **4 OpenMP threads**.
+
+Run it with:
+
+```bash
+python3 scripts/benchmarks/run_two.py --runs 3
+```
+
+The tested SEM meshes are:
+
+- **10 × 10 × 10 elements → 21 × 21 × 21 nodes**
+- **15 × 15 × 15 elements → 31 × 31 × 31 nodes**
+- **20 × 20 × 20 elements → 41 × 41 × 41 nodes**
+- **25 × 25 × 25 elements → 51 × 51 × 51 nodes**
+
+For each mesh size, two configurations are measured:
+
+- **Without snapshots:** SEM execution only.
+- **With snapshots:** SEM execution, snapshot CSV writing and snapshot visualization.
+
+The reported workflow time therefore measures the complete **ad hoc workflow** when snapshots are enabled.
+
+The generated snapshot images are archived separately for each mesh size and each repetition under:
+
+scripts/visualisation/images/mesh_benchmark/
+
+For example:
+
+nodes_31/run_1/
+nodes_31/run_2/
+nodes_31/run_3/
+
+At the end, `run_two.py` also runs a **201 × 201 × 201 node reference case** used for visual comparison. This reference run is kept separate from the mesh-scaling averages because it uses a dedicated configuration.
+
+To skip this final reference run:
+
+```bash
+python3 scripts/benchmarks/run_two.py --runs 3 --skip-reference
+```
+
+The mesh benchmark generates:
+
+```text
+scripts/benchmarks/results/mesh_workflow_benchmark.csv
+scripts/benchmarks/plots/mesh_workflow_scaling.png
+```
+
+`mesh_workflow_scaling.png` compares the average total workflow time for each mesh size, with one bar **without snapshots** and one bar **with snapshots + visualization**.
 
 ## Output files
 
@@ -79,8 +133,9 @@ The SEM Output time also contains other output operations, so this value is an *
 - `scripts/benchmarks/plots/io_bandwidth.png` — effective snapshot I/O bandwidth.
 - `scripts/benchmarks/plots/sem_phases_without_snapshots.png` — SEM phases without snapshots.
 - `scripts/benchmarks/plots/sem_phases_with_snapshots.png` — SEM phases with snapshots.
+- `scripts/benchmarks/plots/mesh_workflow_scaling.png` — complete ad hoc workflow time for different mesh sizes.
 
-To regenerate the graphs without rerunning the simulations:
+To regenerate the main benchmark graphs without rerunning the simulations:
 
 ```bash
 python3 scripts/benchmarks/plot_benchmarks.py
