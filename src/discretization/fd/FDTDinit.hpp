@@ -31,7 +31,7 @@ struct FDTDInit
   bool usePML = false;
 
   vectorReal RHSTerm;
-
+  char *snapshotsRepo = NULL;
   void init_geometry(int argc, char *argv[], FDTDGRIDS &myGrids)
   {
     myGrids.nx = 150;
@@ -141,6 +141,12 @@ struct FDTDInit
         {
           saveSnapShots = true;
           i = i + 1;
+        }
+        // take the repository where snapshots are stored
+        if( arg == "-repo")
+        {
+          snapshotsRepo = argv[i+1];
+          i = i + 2;  
         }
 
         //  use PML
