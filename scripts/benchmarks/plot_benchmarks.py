@@ -20,7 +20,8 @@ def load_recent_batch():
     if not rows:
         raise ValueError("Le fichier des benchmarks est vide")
     batch_id = rows[-1].get("batch_id", "")
-    return [row for row in rows if row.get("batch_id") == batch_id] if batch_id else [rows[-1]]
+    selected = [row for row in rows if row.get("batch_id") == batch_id] if batch_id else [rows[-1]]
+    return [row for row in selected if row.get("solver") in ("", "fdproxy")]
 
 
 def average(rows, field):
@@ -39,168 +40,90 @@ def gnuplot_string(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def fallback_svg(path, title, unit, values):
-    width = max(1100, 180 * len(values) + 170)
-    height = 700
-    left, right, top, bottom = 110, 50, 95, 220
-    plot_width = width - left - right
-    plot_height = height - top - bottom
-    maximum = max((value for _, value in values), default=0) * 1.2 or 1.0
-    spacing = plot_width / len(values)
-    bars = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}">',
-        f'<rect width="{width}" height="{height}" fill="white"/>',
-        f'<text x="{width / 2}" y="48" text-anchor="middle" font-size="23" font-family="sans-serif">{escape(title)}</text>',
-        f'<text x="{left}" y="75" font-size="14" font-family="sans-serif">{escape(unit)}</text>',
-    ]
-    for index in range(6):
-        value = maximum * index / 5
-        y = top + plot_height * (1 - index / 5)
-        bars.append(f'<line x1="{left}" y1="{y}" x2="{width - right}" y2="{y}" stroke="#dddddd"/>')
-        bars.append(f'<text x="{left - 10}" y="{y + 5}" text-anchor="end" font-size="13" font-family="sans-serif">{value:.3g}</text>')
-    for index, (label, value) in enumerate(values):
-        center = left + spacing * (index + 0.5)
-        height_bar = value / maximum * plot_height
-        bars.append(f'<rect x="{center - 38}" y="{top + plot_height - height_bar}" width="76" height="{height_bar}" fill="#4e80ad"/>')
-        label_y = top + plot_height + 23
-        bars.append(f'<text x="{center}" y="{label_y}" transform="rotate(-30 {center} {label_y})" text-anchor="end" font-size="13" font-family="sans-serif">{escape(label)}</text>')
-    bars.append("</svg>")
-    path.write_text("\n".join(bars), encoding="utf-8")
-    print(f"Graphique SVG : {path}")
-
-
-def plot_bars(filename, title, unit, values, x_label):
-    data = "$values << EOD\n" + "\n".join(
-        f"{index} {value:.12g}" for index, (_, value) in enumerate(values, start=1)
-    ) + "\nEOD\n"
-    xtics = ", ".join(
-        f"{gnuplot_string(label)} {index}"
-        for index, (label, _) in enumerate(values, start=1)
-    )
-    png = PLOTS_DIR / filename
-    png.unlink(missing_ok=True)
-    script = f"""
-set terminal pngcairo size 1500,850 font "Sans,12"
-set output {gnuplot_string(str(png))}
-set title {gnuplot_string(title)}
-set ylabel {gnuplot_string(unit)}
-set xlabel {gnuplot_string(x_label)}
-set xrange [0.5:{len(values) + 0.5}]
-set yrange [0:*]
-set boxwidth 0.65 absolute
-set style fill solid 0.85 border -1
-set grid ytics
-set key off
-set xtics ({xtics}) rotate by -25
-plot $values using 1:2 with boxes
-unset output
-"""
-    try:
-        result = subprocess.run(
-            ["gnuplot"], input=data + script, text=True,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE
-        )
-        if result.returncode == 0 and png.is_file() and png.stat().st_size > 0:
-            print(f"Graphique PNG : {png}")
-            return
-        print(f"Gnuplot indisponible (code {result.returncode}), utilisation de SVG.")
-    except FileNotFoundError:
-        print("Gnuplot introuvable, utilisation de SVG.")
-    png.unlink(missing_ok=True)
-    fallback_svg(png.with_suffix(".svg"), title, unit, values)
-
-
-
-def fallback_grouped_svg(path, title, unit, categories, groups, series):
-    width = max(1200, len(categories) * 240 + 250)
+def fallback_lines_svg(path, title, y_label, x_values, series):
+    width = 1200
     height = 760
-    left, right, top, bottom = 110, 55, 125, 190
+    left, right, top, bottom = 105, 55, 110, 100
     plot_width = width - left - right
     plot_height = height - top - bottom
-    maximum = max(
-        (value for values in series.values() for value in values if value is not None),
-        default=0.0
-    )
-    maximum = maximum * 1.2 if maximum > 0 else 1.0
-    colors = ["#3f78a9", "#dd9140", "#3c9a70", "#8858ac", "#c04f68", "#698a35"]
-    group_width = plot_width / len(categories)
-    bar_width = min(43, group_width * 0.75 / len(groups))
+    all_values = [value for _, values in series for value in values]
+    maximum = max(all_values, default=0.0)
+    maximum = maximum * 1.15 if maximum > 0 else 1.0
+    colors = ["#3f78a9", "#dd9140", "#3c9a70", "#8858ac"]
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
         f'<rect width="{width}" height="{height}" fill="white"/>',
-        f'<text x="{width / 2}" y="44" font-family="sans-serif" text-anchor="middle" font-size="22">{escape(title)}</text>',
-        f'<text x="{left}" y="82" font-family="sans-serif" font-size="14">{escape(unit)}</text>',
+        f'<text x="{width/2}" y="44" text-anchor="middle" font-family="sans-serif" font-size="22">{escape(title)}</text>',
+        f'<text x="{left}" y="80" font-family="sans-serif" font-size="14">{escape(y_label)}</text>',
     ]
     for tick in range(6):
         value = maximum * tick / 5
         y = top + plot_height * (1 - tick / 5)
         parts.append(f'<line x1="{left}" y1="{y:.3f}" x2="{width-right}" y2="{y:.3f}" stroke="#dddddd"/>')
-        parts.append(f'<text x="{left-9}" y="{y+5:.3f}" font-family="sans-serif" font-size="13" text-anchor="end">{value:.3g}</text>')
-    for index, label in enumerate(categories):
-        center = left + (index + 0.5) * group_width
-        y_label = top + plot_height + 27
-        parts.append(f'<text x="{center:.3f}" y="{y_label}" transform="rotate(-23 {center:.3f} {y_label})" font-family="sans-serif" font-size="13" text-anchor="end">{escape(label)}</text>')
-        for series_index, group in enumerate(groups):
-            value = series[group][index]
-            if value is None:
-                continue
-            x = center + (series_index - (len(groups)-1)/2) * bar_width - bar_width * 0.43
-            bar_height = value / maximum * plot_height
-            y = top + plot_height - bar_height
-            parts.append(f'<rect x="{x:.3f}" y="{y:.3f}" width="{bar_width*0.86:.3f}" height="{bar_height:.3f}" fill="{colors[series_index%len(colors)]}"/>')
-    legend_width = min(200, (width-left-right)/len(groups))
-    for series_index, group in enumerate(groups):
-        x = left + series_index * legend_width
-        parts.append(f'<rect x="{x:.3f}" y="96" width="16" height="13" fill="{colors[series_index%len(colors)]}"/>')
-        parts.append(f'<text x="{x+24:.3f}" y="108" font-family="sans-serif" font-size="13">{escape(str(group))} thread(s)</text>')
-    parts.append('</svg>')
+        parts.append(f'<text x="{left-10}" y="{y+5:.3f}" text-anchor="end" font-family="sans-serif" font-size="13">{value:.3g}</text>')
+    if len(x_values) == 1:
+        x_positions = [left + plot_width / 2]
+    else:
+        x_positions = [left + plot_width * index / (len(x_values) - 1) for index in range(len(x_values))]
+    for x, label in zip(x_positions, x_values):
+        parts.append(f'<line x1="{x:.3f}" y1="{top}" x2="{x:.3f}" y2="{top+plot_height}" stroke="#eeeeee"/>')
+        parts.append(f'<text x="{x:.3f}" y="{top+plot_height+30}" text-anchor="middle" font-family="sans-serif" font-size="13">{escape(str(label))}</text>')
+    for index, (label, values) in enumerate(series):
+        points = []
+        for x, value in zip(x_positions, values):
+            y = top + plot_height * (1 - value / maximum)
+            points.append((x, y))
+        if len(points) > 1:
+            parts.append(
+                f'<polyline fill="none" stroke="{colors[index % len(colors)]}" stroke-width="3" points="' +
+                " ".join(f"{x:.3f},{y:.3f}" for x, y in points) + '"/>'
+            )
+        for x, y in points:
+            parts.append(f'<circle cx="{x:.3f}" cy="{y:.3f}" r="5" fill="{colors[index % len(colors)]}"/>')
+        legend_x = left + index * 240
+        parts.append(f'<line x1="{legend_x}" y1="88" x2="{legend_x+28}" y2="88" stroke="{colors[index % len(colors)]}" stroke-width="3"/>')
+        parts.append(f'<circle cx="{legend_x+14}" cy="88" r="4" fill="{colors[index % len(colors)]}"/>')
+        parts.append(f'<text x="{legend_x+38}" y="93" font-family="sans-serif" font-size="13">{escape(label)}</text>')
+    parts.append(f'<text x="{width/2}" y="{height-25}" text-anchor="middle" font-family="sans-serif" font-size="14">Nombre de threads</text>')
+    parts.append("</svg>")
     path.write_text("\n".join(parts), encoding="utf-8")
     print(f"Graphique SVG : {path}")
 
 
-def plot_grouped_phases(filename, title, categories, groups, series):
-    if not categories or not groups:
-        return
-    width = 0.78 / len(groups)
+def plot_lines(filename, title, y_label, x_values, series):
     blocks = []
     plots = []
-    colors = ["#3f78a9", "#dd9140", "#3c9a70", "#8858ac", "#c04f68", "#698a35"]
-    for index, group in enumerate(groups):
-        name = f"phase_{index}"
-        pairs = []
-        for phase_index, value in enumerate(series[group], start=1):
-            if value is None:
-                continue
-            center = phase_index + (index - (len(groups)-1)/2) * width
-            pairs.append(f"{center:.10g} {value:.12g}")
-        blocks.append(f"${name} << EOD\n" + "\n".join(pairs) + "\nEOD\n")
-        plots.append(f"${name} using 1:2 with boxes lc rgb {gnuplot_string(colors[index%len(colors)])} title {gnuplot_string(str(group) + ' thread(s)')}")
-    xtics = ", ".join(
-        f"{gnuplot_string(label)} {index}"
-        for index, label in enumerate(categories, start=1)
-    )
+    point_types = [7, 5, 9, 11]
+    for index, (label, values) in enumerate(series):
+        name = f"series_{index}"
+        pairs = "\n".join(f"{x} {value:.12g}" for x, value in zip(x_values, values))
+        blocks.append(f"${name} << EOD\n{pairs}\nEOD\n")
+        plots.append(
+            f"${name} using 1:2 with linespoints lw 3 pt {point_types[index % len(point_types)]} ps 1.2 title {gnuplot_string(label)}"
+        )
     png = PLOTS_DIR / filename
     png.unlink(missing_ok=True)
+    xtics = ", ".join(f'"{value}" {value}' for value in x_values)
     script = f"""
-set terminal pngcairo size 1700,900 font "Sans,12"
+set terminal pngcairo size 1500,850 font "Sans,12"
 set output {gnuplot_string(str(png))}
 set title {gnuplot_string(title)}
-set ylabel "Temps moyen (secondes)"
-set xlabel "Etapes"
-set xrange [0.45:{len(categories) + 0.55}]
+set ylabel {gnuplot_string(y_label)}
+set xlabel "Nombre de threads"
 set yrange [0:*]
-set boxwidth {width*0.85:.12g} absolute
-set style fill solid 0.85 border -1
-set grid ytics
+set grid ytics xtics
 set key outside top horizontal
-set xtics ({xtics}) rotate by -20
+set xtics ({xtics})
 plot {', '.join(plots)}
 unset output
 """
     try:
         result = subprocess.run(
-            ["gnuplot"], input="\n".join(blocks) + script,
-            text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            ["gnuplot"],
+            input="\n".join(blocks) + script,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
         if result.returncode == 0 and png.is_file() and png.stat().st_size > 0:
             print(f"Graphique PNG : {png}")
@@ -209,77 +132,173 @@ unset output
     except FileNotFoundError:
         print("Gnuplot introuvable, utilisation de SVG.")
     png.unlink(missing_ok=True)
-    fallback_grouped_svg(png.with_suffix(".svg"), title, "Temps moyen (s)", categories, groups, series)
+    fallback_lines_svg(png.with_suffix(".svg"), title, y_label, x_values, series)
+
 
 def main():
     rows = load_recent_batch()
+    if not rows:
+        raise ValueError("Aucun resultat FDTD dans la derniere serie")
+
     groups = defaultdict(list)
     for row in rows:
-        groups[int(row["threads"])].append(row)
-    thread_counts = sorted(groups)
-    latest_threads = int(rows[-1]["threads"])
-    latest = groups[latest_threads]
-    repetitions = len(latest)
-    categories = [
-        "Initialisation",
-        "Propagation / calcul",
-        "Sorties FUnTiDES",
-        "Visualisation snapshots",
-        "Visualisation sismos",
-    ]
-    fields = ["initial_s", "compute_s", "output_s", "snapshots_viz_s", "sismos_viz_s"]
-    phase_series = {
-        threads: [average(groups[threads], field) for field in fields]
-        for threads in thread_counts
-    }
-    plot_grouped_phases(
-        "phase_times.png",
-        "Temps moyen par etape selon le nombre de threads",
-        categories,
-        thread_counts,
-        phase_series,
-    )
-    plot_grouped_phases(
-        "simulation_phases.png",
-        "Etapes internes de FUnTiDES selon le nombre de threads",
-        categories[:3],
-        thread_counts,
-        {threads: values[:3] for threads, values in phase_series.items()},
-    )
-    plot_bars(
-        "data_sizes.png",
-        "Taille des fichiers traites - derniere serie",
-        "Taille (MiB)",
-        [
-            ("Snapshots CSV", average(latest, "snapshot_csv_mib")),
-            ("Sismogrammes CSV", average(latest, "sismo_csv_mib")),
-            ("Images snapshots", average(latest, "snapshot_png_mib")),
-            ("Images sismos", average(latest, "sismo_png_mib")),
-        ],
-        "Type de donnees",
-    )
-    plot_bars(
-        "workflow_time.png",
-        "Temps moyen du workflow selon le nombre de threads",
-        "Temps (secondes)",
-        [
-            (f"{threads} thread(s)", average(groups[threads], "workflow_wall_s"))
-            for threads in thread_counts
-        ],
-        "Nombre de threads FUnTiDES",
-    )
-    plot_bars(
-        "simulation_time.png",
-        "Temps moyen de la simulation selon le nombre de threads",
-        "Temps (secondes)",
-        [
-            (f"{threads} thread(s)", average(groups[threads], "simulation_wall_s"))
-            for threads in thread_counts
-        ],
-        "Nombre de threads FUnTiDES",
-    )
-    if any(row.get("data_status") != "generated_this_run" for row in rows):
-        print("Attention : donnees de test ou CSV preexistants ; simulation et visualisation non couplees.")
+        threads = int(row["threads"])
+        enabled = int(row.get("snapshots_enabled", "1") or 1)
+        groups[(threads, enabled)].append(row)
+
+    thread_counts = sorted({int(row["threads"]) for row in rows})
+    modes = sorted({int(row.get("snapshots_enabled", "1") or 1) for row in rows})
+
+    if modes == [0, 1]:
+        simulation_series = [
+            (
+                "Sans snapshots",
+                [average(groups[(threads, 0)], "simulation_wall_s") for threads in thread_counts],
+            ),
+            (
+                "Avec snapshots",
+                [average(groups[(threads, 1)], "simulation_wall_s") for threads in thread_counts],
+            ),
+        ]
+        workflow_series = [
+            (
+                "Sans snapshots",
+                [average(groups[(threads, 0)], "workflow_wall_s") for threads in thread_counts],
+            ),
+            (
+                "Avec snapshots + visualisation",
+                [average(groups[(threads, 1)], "workflow_wall_s") for threads in thread_counts],
+            ),
+        ]
+        output_series = [
+            (
+                "Sans snapshots",
+                [average(groups[(threads, 0)], "output_s") for threads in thread_counts],
+            ),
+            (
+                "Avec snapshots",
+                [average(groups[(threads, 1)], "output_s") for threads in thread_counts],
+            ),
+        ]
+
+        plot_lines(
+            "simulation_time.png",
+            "Temps moyen FDTD : avec et sans snapshots",
+            "Temps moyen (secondes)",
+            thread_counts,
+            simulation_series,
+        )
+
+        plot_lines(
+            "workflow_time.png",
+            "Temps moyen du workflow : avec et sans snapshots",
+            "Temps moyen (secondes)",
+            thread_counts,
+            workflow_series,
+        )
+
+        plot_lines(
+            "snapshot_output_time.png",
+            "Temps Output FDTD : avec et sans snapshots",
+            "Temps moyen (secondes)",
+            thread_counts,
+            output_series,
+        )
+
+        phase_without = [
+            (
+                "Initialisation",
+                [average(groups[(threads, 0)], "initial_s") for threads in thread_counts],
+            ),
+            (
+                "Kernel",
+                [average(groups[(threads, 0)], "kernel_s") for threads in thread_counts],
+            ),
+            (
+                "AddRHS",
+                [average(groups[(threads, 0)], "add_rhs_s") for threads in thread_counts],
+            ),
+            (
+                "Output",
+                [average(groups[(threads, 0)], "output_s") for threads in thread_counts],
+            ),
+        ]
+
+        phase_with = [
+            (
+                "Initialisation",
+                [average(groups[(threads, 1)], "initial_s") for threads in thread_counts],
+            ),
+            (
+                "Kernel",
+                [average(groups[(threads, 1)], "kernel_s") for threads in thread_counts],
+            ),
+            (
+                "AddRHS",
+                [average(groups[(threads, 1)], "add_rhs_s") for threads in thread_counts],
+            ),
+            (
+                "Output",
+                [average(groups[(threads, 1)], "output_s") for threads in thread_counts],
+            ),
+        ]
+
+        plot_lines(
+            "fdtd_phases_without_snapshots.png",
+            "Etapes internes FDTD - sans snapshots",
+            "Temps moyen (secondes)",
+            thread_counts,
+            phase_without,
+        )
+
+        plot_lines(
+            "fdtd_phases_with_snapshots.png",
+            "Etapes internes FDTD - avec snapshots",
+            "Temps moyen (secondes)",
+            thread_counts,
+            phase_with,
+        )
+
+        overhead_values = []
+        for threads in thread_counts:
+            without = average(groups[(threads, 0)], "simulation_wall_s")
+            with_snapshots = average(groups[(threads, 1)], "simulation_wall_s")
+            overhead_values.append(with_snapshots - without)
+
+        plot_lines(
+            "snapshot_overhead.png",
+            "Surcout moyen des snapshots",
+            "Surcout moyen (secondes)",
+            thread_counts,
+            [("Avec - sans snapshots", overhead_values)],
+        )
+    else:
+        enabled = modes[-1]
+        label = "Avec snapshots" if enabled else "Sans snapshots"
+        plot_lines(
+            "simulation_time.png",
+            f"Temps moyen de la simulation FDTD - {label.lower()}",
+            "Temps moyen (secondes)",
+            thread_counts,
+            [
+                (
+                    label,
+                    [average(groups[(threads, enabled)], "simulation_wall_s") for threads in thread_counts],
+                )
+            ],
+        )
+        plot_lines(
+            "workflow_time.png",
+            f"Temps moyen du workflow - {label.lower()}",
+            "Temps moyen (secondes)",
+            thread_counts,
+            [
+                (
+                    label,
+                    [average(groups[(threads, enabled)], "workflow_wall_s") for threads in thread_counts],
+                )
+            ],
+        )
 
 
 if __name__ == "__main__":
