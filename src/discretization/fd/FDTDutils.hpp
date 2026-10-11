@@ -5,7 +5,10 @@
 
 #include "FDTDdata.hpp"
 #include "FDTDkernels.hpp"
-
+#include <fstream>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
 using namespace std;
 
 using namespace std;
@@ -221,12 +224,55 @@ struct FDTDUtils
              pnGlobal(IDX3_l(myGrids.xs, myGrids.ys, myGrids.zs), i1));
       // #ifdef FD_SAVE_SNAPSHOTS
       if (saveSnapShots)
-        write_io(myGrids, 0, myGrids.nx, myGrids.ny / 2, myGrids.ny / 2, 0,
-                 myGrids.nz, pnGlobal, itSample, i1);
+        writeSnapshotCSV(myGrids, pnGlobal, itSample, i1);
       // #endif
     }
   }
+void writeSnapshotCSV(FDTDGRIDS &myGrids,
+                      arrayReal const &pnGlobal,
+                      int istep,
+                      const int &i1)
+{
+    char filename[64];
+    snprintf(filename, sizeof(filename),
+             "snapshot_it_%06d.csv", istep);
 
+    std::ofstream file(filename);
+
+    if (!file.is_open())
+    {
+        throw std::runtime_error(
+            "Impossible d'ouvrir le fichier snapshot CSV.");
+    }
+
+    file << "x,y,z,pressure\n";
+    file << std::setprecision(9);
+
+    for (int i = 0; i < myGrids.nx; ++i)
+    {
+        for (int j = 0; j < myGrids.ny; ++j)
+        {
+            for (int k = 0; k < myGrids.nz; ++k)
+            {
+                const float x = i * myGrids.dx;
+                const float y = j * myGrids.dy;
+                const float z = k * myGrids.dz;
+
+                file << x << ','
+                     << y << ','
+                     << z << ','
+                     << pnGlobal(IDX3_l(i, j, k), i1)
+                     << '\n';
+            }
+        }
+    }
+
+    if (!file)
+    {
+        throw std::runtime_error(
+            "Erreur pendant l'ecriture du snapshot CSV.");
+    }
+}
   void write_io(FDTDGRIDS &myGrids, int x0, int x1, int y0, int y1, int z0,
                 int z1, arrayReal const &pnGlobal, int istep, const int &i1)
   {
