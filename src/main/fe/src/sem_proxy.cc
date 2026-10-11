@@ -17,7 +17,10 @@
 #include <iostream>
 #include <sstream>
 #include <variant>
-
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <vector>
 using namespace SourceAndReceiverUtils;
 
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
@@ -48,6 +51,9 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
 
   bool isModelOnNodes = opt.isModelOnNodes;
   isElastic_ = opt.isElastic;
+  is_snapshots_ = opt.is_snapshots;
+  snap_time_interval_ = opt.snap_time_interval;
+  snap_folder_ = opt.snap_folder;
   cout << boolalpha;
   bool isElastic = isElastic_;
 
@@ -183,7 +189,10 @@ void SEMproxy::run()
     }
 
     pnAtReceiver(0, indexTimeSample) = varnp1;
-
+    if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)
+    {
+      saveSnapshot(indexTimeSample);
+    }
     swap(i1, i2);
 
     auto tmp = solverData.m_i1;
@@ -388,4 +397,31 @@ float SEMproxy::find_cfl_dt(float cfl_factor)
   float dt = cfl_factor * min_spacing / (sqrtDim3 * v_max);
 
   return dt;
+}
+void SEMproxy::saveSnapshot(int timestep)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+  std::filesystem::create_directories(snap_folder_);
+
+  char filename[256];
+  snprintf(filename, sizeof(filename), "%s/snapshot_it_%06d.csv",
+           snap_folder_.c_str(), timestep);
+
+  std::ofstream file(filename);
+  if (!file.is_open())
+    throw std::runtime_error("Impossible d'ouvrir le fichier snapshot CSV.");
+
+  file << "x,y,z,pressure\n";
+  file << std::setprecision(9);
+
+  for (int n = 0; n < nbNodes; ++n)
+  {
+    file << m_mesh->nodeCoord(n, 0) << ','
+         << m_mesh->nodeCoord(n, 1) << ','
+         << m_mesh->nodeCoord(n, 2) << ','
+         << pnGlobal(n, i2) << '\n';
+  }
+
+  if (!file)
+    throw std::runtime_error("Erreur pendant l'ecriture du snapshot CSV.");
 }
