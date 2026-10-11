@@ -222,10 +222,8 @@ struct FDTDUtils
       printf("TimeStep=%d\t; Pressure value at source [%d %d %d] = %f\n",
              itSample, myGrids.xs, myGrids.ys, myGrids.zs,
              pnGlobal(IDX3_l(myGrids.xs, myGrids.ys, myGrids.zs), i1));
-      #ifdef FD_SAVE_SNAPSHOTS
         if (saveSnapShots)
           writeSnapshotCSV(myGrids, pnGlobal, itSample, i1);
-       #endif
     }
   }
   void writeSnapshotCSV(FDTDGRIDS &myGrids,
