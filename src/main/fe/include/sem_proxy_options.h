@@ -13,6 +13,9 @@ class SemProxyOptions
   float lx = 2000.f, ly = 2000.f, lz = 2000.f;
   float srcx = 1010.f, srcy = 1010.f, srcz = 1010.f;
   float rcvx = 1410.f, rcvy = 1010.f, rcvz = 1010.f;
+  //sismos: fichier d'entrée des récepteurs et CSV de sortie
+  std::string rcv_file = "";
+  std::string sismo_file = "sismos.csv";
   std::string implem = "makutu";  // makutu|shiva
   std::string method = "sem";     // sem|dg
   std::string mesh = "cartesian";
@@ -71,6 +74,9 @@ class SemProxyOptions
         "Boolean to tell if the model is charged on nodes (true) or on element "
         "(false)",
         cxxopts::value<bool>(o.isModelOnNodes))(
-        "is-elastic", "Elastic simulation", cxxopts::value<bool>(o.isElastic));
+        "is-elastic", "Elastic simulation", cxxopts::value<bool>(o.isElastic))( "rcv-file", "Input file with receiver positions (one x,y,z per line)",
+        cxxopts::value<std::string>(o.rcv_file))(
+        "sismo-file", "Output CSV file for the sismos (default sismos.csv)",
+        cxxopts::value<std::string>(o.sismo_file));
   }
 };
