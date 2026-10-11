@@ -21,7 +21,7 @@ def load_recent_batch():
         raise ValueError("Le fichier des benchmarks est vide")
     batch_id = rows[-1].get("batch_id", "")
     selected = [row for row in rows if row.get("batch_id") == batch_id] if batch_id else [rows[-1]]
-    return [row for row in selected if row.get("solver") in ("", "fdproxy")]
+    return [row for row in selected if row.get("solver") in ("", "semproxy")]
 
 
 def average(rows, field):
@@ -138,7 +138,7 @@ unset output
 def main():
     rows = load_recent_batch()
     if not rows:
-        raise ValueError("Aucun resultat FDTD dans la derniere serie")
+        raise ValueError("Aucun resultat SEM dans la derniere serie")
 
     groups = defaultdict(list)
     for row in rows:
@@ -183,7 +183,7 @@ def main():
 
         plot_lines(
             "simulation_time.png",
-            "Temps moyen FDTD : avec et sans snapshots",
+            "Temps moyen SEM : avec et sans snapshots",
             "Temps moyen (secondes)",
             thread_counts,
             simulation_series,
@@ -199,7 +199,7 @@ def main():
 
         plot_lines(
             "snapshot_output_time.png",
-            "Temps Output FDTD : avec et sans snapshots",
+            "Temps Output SEM : avec et sans snapshots",
             "Temps moyen (secondes)",
             thread_counts,
             output_series,
@@ -213,10 +213,6 @@ def main():
             (
                 "Kernel",
                 [average(groups[(threads, 0)], "kernel_s") for threads in thread_counts],
-            ),
-            (
-                "AddRHS",
-                [average(groups[(threads, 0)], "add_rhs_s") for threads in thread_counts],
             ),
             (
                 "Output",
@@ -234,26 +230,22 @@ def main():
                 [average(groups[(threads, 1)], "kernel_s") for threads in thread_counts],
             ),
             (
-                "AddRHS",
-                [average(groups[(threads, 1)], "add_rhs_s") for threads in thread_counts],
-            ),
-            (
                 "Output",
                 [average(groups[(threads, 1)], "output_s") for threads in thread_counts],
             ),
         ]
 
         plot_lines(
-            "fdtd_phases_without_snapshots.png",
-            "Etapes internes FDTD - sans snapshots",
+            "sem_phases_without_snapshots.png",
+            "Etapes internes SEM - sans snapshots",
             "Temps moyen (secondes)",
             thread_counts,
             phase_without,
         )
 
         plot_lines(
-            "fdtd_phases_with_snapshots.png",
-            "Etapes internes FDTD - avec snapshots",
+            "sem_phases_with_snapshots.png",
+            "Etapes internes SEM - avec snapshots",
             "Temps moyen (secondes)",
             thread_counts,
             phase_with,
@@ -277,7 +269,7 @@ def main():
         label = "Avec snapshots" if enabled else "Sans snapshots"
         plot_lines(
             "simulation_time.png",
-            f"Temps moyen de la simulation FDTD - {label.lower()}",
+            f"Temps moyen de la simulation SEM - {label.lower()}",
             "Temps moyen (secondes)",
             thread_counts,
             [

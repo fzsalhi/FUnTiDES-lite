@@ -17,21 +17,25 @@ VIS_DIR = ROOT_DIR / "scripts" / "visualisation"
 DATA_DIR = VIS_DIR / "data"
 IMAGES_DIR = VIS_DIR / "images"
 RESULTS_FILE = BASE_DIR / "results" / "benchmarks.csv"
-EXE = ROOT_DIR / "build-openmp" / "src" / "main" / "fd" / "fdproxy"
+EXE = ROOT_DIR / "build-openmp" / "bin" / "semproxy"
 
-NX = 30
-NY = 30
-NZ = 30
+ORDER = 2
+EX = 15
+EY = 15
+EZ = 15
 
-DX = 10
-DY = 10
-DZ = 10
+NX = EX * ORDER + 1
+NY = EY * ORDER + 1
+NZ = EZ * ORDER + 1
 
-XS = NX // 2
-YS = NY // 2
-ZS = NZ // 2
+LX = 2000
+LY = 2000
+LZ = 2000
 
-SLICE_POSITION = XS * DX
+DT = 0.001
+TIMEMAX = 1.5
+SNAP_INTERVAL = 50
+SLICE_POSITION = 1010
 
 COLUMNS = [
     "date", "solver", "threads", "nx", "ny", "nz", "snapshots_enabled", "data_status",
@@ -94,19 +98,15 @@ def get_solver_times(output):
     number = r"([0-9.eE+-]+)"
 
     times = {
-        "simulation_internal_s": extract_time(output, rf"Elapsed\s+TotalExecution\s+Time\s*:\s*{number}"),
-        "initial_s": extract_time(output, rf"Elapsed\s+Initialization\s+Time\s*:\s*{number}"),
-        "compute_loop_s": extract_time(output, rf"Elapsed\s+ComputeLoop\s+RunTime\s*:\s*{number}"),
+        "simulation_internal_s": extract_time(output, rf"Elapsed\s+TotalExe\s+Time\s*:\s*{number}"),
+        "initial_s": extract_time(output, rf"Elapsed\s+Initial\s+Time\s*:\s*{number}"),
+        "compute_loop_s": extract_time(output, rf"Elapsed\s+Compute\s+Time\s*:\s*{number}"),
         "kernel_s": extract_time(output, rf"Elapsed\s+Kernel\s+Time\s*:\s*{number}"),
-        "add_rhs_s": extract_time(output, rf"Elapsed\s+AddRHS\s+Time\s*:\s*{number}"),
+        "add_rhs_s": "",
         "output_s": extract_time(output, rf"Elapsed\s+Output\s+Time\s*:\s*{number}"),
     }
 
-    if times["kernel_s"] != "" and times["add_rhs_s"] != "":
-        times["compute_s"] = times["kernel_s"] + times["add_rhs_s"]
-    else:
-        times["compute_s"] = ""
-
+    times["compute_s"] = times["kernel_s"] if times["kernel_s"] != "" else ""
     return times
 
 
@@ -230,23 +230,30 @@ def run_once(threads, repetition, batch_id, snapshot_script, snapshots_enabled):
 
     command = [
         str(EXE),
-        "-nx", str(NX),
-        "-ny", str(NY),
-        "-nz", str(NZ),
-        "-dx", str(DX),
-        "-dy", str(DY),
-        "-dz", str(DZ),
-        "-xs", str(XS),
-        "-ys", str(YS),
-        "-zs", str(ZS),
+        "--order", str(ORDER),
+        "--ex", str(EX),
+        "--ey", str(EY),
+        "--ez", str(EZ),
+        "--lx", str(LX),
+        "--ly", str(LY),
+        "--lz", str(LZ),
+        "--method", "sem",
+        "--mesh", "cartesian",
+        "--implem", "makutu",
+        "--dt", str(DT),
+        "--timemax", str(TIMEMAX),
     ]
 
     if snapshots_enabled:
-        command.extend(["-savesnapshots", "-repo", str(DATA_DIR)])
+        command.extend([
+            "--is-snapshots=true",
+            "--snap-time-interval", str(SNAP_INTERVAL),
+            "--snap-folder", str(DATA_DIR),
+        ])
 
     start = time.perf_counter()
 
-    simulation_wall, output = run_command(command, "FDTD", env=env)
+    simulation_wall, output = run_command(command, "SEM", env=env)
     solver_times = get_solver_times(output)
 
     snapshots_viz = 0.0
@@ -275,7 +282,7 @@ def run_once(threads, repetition, batch_id, snapshot_script, snapshots_enabled):
 
     row = {
         "date": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "solver": "fdproxy",
+        "solver": "semproxy",
         "threads": threads,
         "nx": NX,
         "ny": NY,
@@ -305,13 +312,12 @@ def print_means(threads, rows, runs, snapshots_enabled):
 
     print(f"\n====== MOYENNES {mode} - {threads} THREAD(S) ({runs} repetitions) ======")
 
-    show_mean("Total FDTD (horloge Python)", rows, "simulation_wall_s")
-    show_mean("Total FDTD (TotalExecution)", rows, "simulation_internal_s")
+    show_mean("Total SEM (horloge Python)", rows, "simulation_wall_s")
+    show_mean("Total SEM (TotalExe)", rows, "simulation_internal_s")
     show_mean("Initialisation", rows, "initial_s")
-    show_mean("Boucle de calcul (ComputeLoop)", rows, "compute_loop_s")
+    show_mean("Calcul SEM", rows, "compute_loop_s")
     show_mean("Kernel", rows, "kernel_s")
-    show_mean("AddRHS", rows, "add_rhs_s")
-    show_mean("Output FDTD", rows, "output_s")
+    show_mean("Output SEM", rows, "output_s")
 
     if snapshots_enabled:
         print(f"  {'Sauvegarde snapshots seule':<42} non mesuree separement")
@@ -334,7 +340,7 @@ def print_means(threads, rows, runs, snapshots_enabled):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Benchmarks FDTD avec comparaison snapshots")
+    parser = argparse.ArgumentParser(description="Benchmarks SEM avec comparaison snapshots")
     parser.add_argument("--threads", type=parse_threads, default=[4])
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--compare-snapshots", action="store_true")
@@ -345,7 +351,7 @@ def main():
         parser.error("--runs doit etre superieur ou egal a 1")
 
     if not EXE.is_file():
-        parser.error(f"Executable fdproxy introuvable : {EXE}")
+        parser.error(f"Executable semproxy introuvable : {EXE}")
 
     snapshot_script = get_visualizer(
         ("visu_snapshots.py", "visu_snapshot.py", "visualiser_snapshot.py")
@@ -356,15 +362,17 @@ def main():
     total = len(args.threads) * args.runs * len(modes)
 
     print(
-        f"\nBenchmark FDTD : {args.threads} threads, {args.runs} repetitions par configuration"
+        f"\nBenchmark SEM : {args.threads} threads, {args.runs} repetitions par configuration"
     )
-    print(f"Grille fixe : {NX} x {NY} x {NZ}")
+    print(f"Maillage SEM : {EX} x {EY} x {EZ} elements, ordre {ORDER}")
+    print(f"Noeuds : {NX} x {NY} x {NZ}")
+    print(f"Domaine : {LX} x {LY} x {LZ}")
     print(f"Position de coupe : {SLICE_POSITION}")
 
     if args.compare_snapshots:
         print("Comparaison : sans snapshots / avec snapshots")
     else:
-        print("Snapshots : actives, sauvegarde tous les 50 pas")
+        print(f"Snapshots : actives, sauvegarde tous les {SNAP_INTERVAL} pas")
 
     print(f"Nombre total d'executions : {total}", flush=True)
 
@@ -391,7 +399,7 @@ def main():
 
                 line = (
                     f"  Simulation : {row['simulation_wall_s']:.6f} s | "
-                    f"Output FDTD : {float(row['output_s']):.6f} s"
+                    f"Output SEM : {float(row['output_s']):.6f} s"
                 )
 
                 if snapshots_enabled:
@@ -406,13 +414,13 @@ def main():
 
     if args.compare_snapshots:
         print(
-            "La difference de temps FDTD entre les deux courbes mesure le surcout global des snapshots."
+            "La difference de temps SEM entre les deux courbes mesure le surcout global des snapshots."
         )
-        print("Le temps exact de writeSnapshotCSV n'est pas encore isole separement.")
+        print("Le temps exact de saveSnapshot n'est pas isole separement.")
     else:
         print(
-            "Output FDTD contient le cout des sorties, y compris les snapshots, "
-            "mais le temps de sauvegarde snapshot n'est pas encore isole."
+            "Output SEM contient le cout des sorties, y compris les snapshots, "
+            "mais le temps de sauvegarde snapshot n'est pas isole."
         )
 
     print("\nCreation des graphiques...", flush=True)
