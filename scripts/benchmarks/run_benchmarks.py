@@ -339,6 +339,74 @@ def print_means(threads, rows, runs, snapshots_enabled):
         )
 
 
+
+def safe_ratio(numerator, denominator):
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    return numerator / denominator
+
+
+def print_hpc_metrics(all_rows, thread_counts, compare_snapshots):
+    print("\n====== METRIQUES HPC ======")
+
+    modes = [0, 1] if compare_snapshots else [1]
+
+    for enabled in modes:
+        label = "avec snapshots" if enabled else "sans snapshots"
+        baseline_rows = all_rows.get((1, enabled), [])
+        baseline = mean_value(baseline_rows, "simulation_wall_s")
+
+        if baseline is None:
+            print(f"\nSpeedup / efficacite ({label}) : thread 1 absent, calcul impossible")
+            continue
+
+        print(f"\n{label.upper()}")
+        print("  threads    speedup    efficacite")
+
+        for threads in thread_counts:
+            rows = all_rows.get((threads, enabled), [])
+            elapsed = mean_value(rows, "simulation_wall_s")
+            speedup = safe_ratio(baseline, elapsed)
+
+            if speedup is None:
+                continue
+
+            efficiency = speedup / threads * 100.0
+            print(f"  {threads:<10}{speedup:<11.3f}{efficiency:.2f} %")
+
+    if compare_snapshots:
+        print("\nSURCOUT RELATIF DES SNAPSHOTS")
+        print("  threads    overhead")
+
+        for threads in thread_counts:
+            without = mean_value(all_rows.get((threads, 0), []), "simulation_wall_s")
+            with_snapshots = mean_value(all_rows.get((threads, 1), []), "simulation_wall_s")
+
+            if without is None or with_snapshots is None or without <= 0:
+                continue
+
+            overhead_percent = (with_snapshots - without) / without * 100.0
+            print(f"  {threads:<10}{overhead_percent:.2f} %")
+
+    print("\nDEBIT I/O EFFECTIF DES SNAPSHOTS")
+    print("  threads    MiB/s")
+
+    for threads in thread_counts:
+        rows = all_rows.get((threads, 1), [])
+        size_mib = mean_value(rows, "snapshot_csv_mib")
+        output_s = mean_value(rows, "output_s")
+
+        bandwidth = safe_ratio(size_mib, output_s)
+
+        if bandwidth is not None:
+            print(f"  {threads:<10}{bandwidth:.3f}")
+
+    print("\nSpeedup = T(1) / T(p)")
+    print("Efficacite = Speedup / p * 100")
+    print("Overhead snapshots (%) = (Tavec - Tsans) / Tsans * 100")
+    print("Debit I/O = taille CSV / temps Output SEM")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Benchmarks SEM avec comparaison snapshots")
     parser.add_argument("--threads", type=parse_threads, default=[4])
@@ -376,6 +444,8 @@ def main():
 
     print(f"Nombre total d'executions : {total}", flush=True)
 
+    all_rows = {}
+
     for threads in args.threads:
         for snapshots_enabled in modes:
             rows = []
@@ -409,6 +479,9 @@ def main():
                 print(line)
 
             print_means(threads, rows, args.runs, snapshots_enabled)
+            all_rows[(threads, int(snapshots_enabled))] = rows
+
+    print_hpc_metrics(all_rows, args.threads, args.compare_snapshots)
 
     print(f"\nResultats individuels enregistres dans : {RESULTS_FILE}")
 

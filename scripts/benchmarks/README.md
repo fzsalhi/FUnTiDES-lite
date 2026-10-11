@@ -35,13 +35,48 @@ The snapshot interval is fixed at **50 time steps**.
 
 The terminal displays the **average over all repetitions** for each thread count and configuration.
 
+## HPC metrics
+
+The benchmark also computes the following performance metrics.
+
+### Speedup
+
+S(p) = T(1) / T(p)
+
+where `T(1)` is the average execution time with one thread and `T(p)` is the average execution time with `p` threads.
+
+### Parallel efficiency
+
+E(p) = S(p) / p × 100
+
+This shows how efficiently the available threads are used.
+
+### Relative snapshot overhead
+
+overhead (%) = (T_with - T_without) / T_without × 100
+
+where `T_with` is the average SEM time with snapshots and `T_without` is the average SEM time without snapshots.
+
+### Effective I/O bandwidth
+
+bandwidth = snapshot CSV size / SEM Output time
+
+
+The bandwidth is reported in **MiB/s**.
+
+The SEM Output time also contains other output operations, so this value is an **effective I/O bandwidth**, not an isolated measurement of `saveSnapshot()`.
+
 ## Output files
 
 - `scripts/benchmarks/results/benchmarks.csv` — one row per run; previous results are kept.
 - `scripts/benchmarks/plots/simulation_time.png` — SEM time with and without snapshots.
 - `scripts/benchmarks/plots/workflow_time.png` — complete workflow time.
 - `scripts/benchmarks/plots/snapshot_output_time.png` — SEM Output time with and without snapshots.
-- `scripts/benchmarks/plots/snapshot_overhead.png` — `SEM with snapshots - SEM without snapshots`.
+- `scripts/benchmarks/plots/snapshot_overhead.png` — absolute snapshot overhead in seconds.
+- `scripts/benchmarks/plots/snapshot_overhead_percent.png` — relative snapshot overhead in percent.
+- `scripts/benchmarks/plots/speedup.png` — measured speedup and ideal speedup.
+- `scripts/benchmarks/plots/parallel_efficiency.png` — measured parallel efficiency and ideal efficiency.
+- `scripts/benchmarks/plots/io_bandwidth.png` — effective snapshot I/O bandwidth.
 - `scripts/benchmarks/plots/sem_phases_without_snapshots.png` — SEM phases without snapshots.
 - `scripts/benchmarks/plots/sem_phases_with_snapshots.png` — SEM phases with snapshots.
 

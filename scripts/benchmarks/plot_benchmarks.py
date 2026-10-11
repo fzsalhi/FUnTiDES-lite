@@ -135,6 +135,44 @@ unset output
     fallback_lines_svg(png.with_suffix(".svg"), title, y_label, x_values, series)
 
 
+def positive_ratio(numerator, denominator):
+    if denominator <= 0:
+        return 0.0
+    return numerator / denominator
+
+
+def speedup_values(groups, thread_counts, enabled):
+    if (1, enabled) not in groups:
+        return None
+
+    baseline = average(groups[(1, enabled)], "simulation_wall_s")
+    if baseline <= 0:
+        return None
+
+    values = []
+    for threads in thread_counts:
+        elapsed = average(groups[(threads, enabled)], "simulation_wall_s")
+        values.append(positive_ratio(baseline, elapsed))
+    return values
+
+
+def efficiency_values(speedups, thread_counts):
+    return [
+        positive_ratio(speedup, threads) * 100.0
+        for speedup, threads in zip(speedups, thread_counts)
+    ]
+
+
+def io_bandwidth_values(groups, thread_counts):
+    values = []
+    for threads in thread_counts:
+        rows = groups.get((threads, 1), [])
+        size_mib = average(rows, "snapshot_csv_mib")
+        output_s = average(rows, "output_s")
+        values.append(positive_ratio(size_mib, output_s))
+    return values
+
+
 def main():
     rows = load_recent_batch()
     if not rows:
@@ -160,6 +198,7 @@ def main():
                 [average(groups[(threads, 1)], "simulation_wall_s") for threads in thread_counts],
             ),
         ]
+
         workflow_series = [
             (
                 "Sans snapshots",
@@ -170,6 +209,7 @@ def main():
                 [average(groups[(threads, 1)], "workflow_wall_s") for threads in thread_counts],
             ),
         ]
+
         output_series = [
             (
                 "Sans snapshots",
@@ -251,22 +291,73 @@ def main():
             phase_with,
         )
 
-        overhead_values = []
+        overhead_seconds = []
+        overhead_percent = []
+
         for threads in thread_counts:
             without = average(groups[(threads, 0)], "simulation_wall_s")
             with_snapshots = average(groups[(threads, 1)], "simulation_wall_s")
-            overhead_values.append(with_snapshots - without)
+            overhead_seconds.append(with_snapshots - without)
+            overhead_percent.append(positive_ratio(with_snapshots - without, without) * 100.0)
 
         plot_lines(
             "snapshot_overhead.png",
             "Surcout moyen des snapshots",
             "Surcout moyen (secondes)",
             thread_counts,
-            [("Avec - sans snapshots", overhead_values)],
+            [("Avec - sans snapshots", overhead_seconds)],
         )
+
+        plot_lines(
+            "snapshot_overhead_percent.png",
+            "Surcout relatif des snapshots",
+            "Surcout (%)",
+            thread_counts,
+            [("Overhead snapshots", overhead_percent)],
+        )
+
+        speedup_without = speedup_values(groups, thread_counts, 0)
+        speedup_with = speedup_values(groups, thread_counts, 1)
+
+        if speedup_without is not None and speedup_with is not None:
+            plot_lines(
+                "speedup.png",
+                "Strong scaling SEM - speedup",
+                "Speedup T(1) / T(p)",
+                thread_counts,
+                [
+                    ("Sans snapshots", speedup_without),
+                    ("Avec snapshots", speedup_with),
+                    ("Speedup ideal", [float(threads) for threads in thread_counts]),
+                ],
+            )
+
+            plot_lines(
+                "parallel_efficiency.png",
+                "Efficacite parallele SEM",
+                "Efficacite (%)",
+                thread_counts,
+                [
+                    ("Sans snapshots", efficiency_values(speedup_without, thread_counts)),
+                    ("Avec snapshots", efficiency_values(speedup_with, thread_counts)),
+                    ("Efficacite ideale", [100.0 for _ in thread_counts]),
+                ],
+            )
+        else:
+            print("Speedup non genere : le benchmark doit contenir une mesure a 1 thread.")
+
+        plot_lines(
+            "io_bandwidth.png",
+            "Debit I/O effectif des snapshots",
+            "Debit (MiB/s)",
+            thread_counts,
+            [("CSV / Output SEM", io_bandwidth_values(groups, thread_counts))],
+        )
+
     else:
         enabled = modes[-1]
         label = "Avec snapshots" if enabled else "Sans snapshots"
+
         plot_lines(
             "simulation_time.png",
             f"Temps moyen de la simulation SEM - {label.lower()}",
@@ -279,6 +370,7 @@ def main():
                 )
             ],
         )
+
         plot_lines(
             "workflow_time.png",
             f"Temps moyen du workflow - {label.lower()}",
@@ -291,6 +383,42 @@ def main():
                 )
             ],
         )
+
+        speedups = speedup_values(groups, thread_counts, enabled)
+
+        if speedups is not None:
+            plot_lines(
+                "speedup.png",
+                "Strong scaling SEM - speedup",
+                "Speedup T(1) / T(p)",
+                thread_counts,
+                [
+                    (label, speedups),
+                    ("Speedup ideal", [float(threads) for threads in thread_counts]),
+                ],
+            )
+
+            plot_lines(
+                "parallel_efficiency.png",
+                "Efficacite parallele SEM",
+                "Efficacite (%)",
+                thread_counts,
+                [
+                    (label, efficiency_values(speedups, thread_counts)),
+                    ("Efficacite ideale", [100.0 for _ in thread_counts]),
+                ],
+            )
+        else:
+            print("Speedup non genere : le benchmark doit contenir une mesure a 1 thread.")
+
+        if enabled == 1:
+            plot_lines(
+                "io_bandwidth.png",
+                "Debit I/O effectif des snapshots",
+                "Debit (MiB/s)",
+                thread_counts,
+                [("CSV / Output SEM", io_bandwidth_values(groups, thread_counts))],
+            )
 
 
 if __name__ == "__main__":
