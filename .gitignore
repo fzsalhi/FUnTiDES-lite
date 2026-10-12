@@ -282,3 +282,4 @@ data/
 scripts/benchmarks/plots_sismos/
 scripts/visualisation/data/sismos_benchmark.csv
 scripts/visualisation/images/
+scripts/benchmarks/plots_combined/
