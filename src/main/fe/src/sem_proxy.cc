@@ -362,6 +362,61 @@ void SEMproxy::init_source()
       break;
     default:
       throw std::runtime_error("Unsupported order: " + std::to_string(order));
+  }  // Receivers computation : meme travail qu'avant, mais pour CHAQUE recepteur
+  const int nPts = m_mesh->getNumberOfPointsPerElement();
+  // ComputeRHSWeights ecrit toujours dans la ligne 0 du tableau qu'on lui
+  // donne : on lui donne un tableau temporaire d'1 ligne, puis on recopie
+  arrayReal tmpWeights = allocateArray2D<arrayReal>(1, nPts, "tmpRcvWeights");
+
+  for (int r = 0; r < (int)rcv_coords_.size(); r++)
+  {
+    // 1. maille qui contient le recepteur r
+    int receiver_index = floor((rcv_coords_[r][0] * ex) / lx) +
+                         floor((rcv_coords_[r][1] * ey) / ly) * ex +
+                         floor((rcv_coords_[r][2] * ez) / lz) * ey * ex;
+    rhsElementRcv[r] = receiver_index;
+    cout << "Receiver " << r << " is in element " << receiver_index << endl;
+
+    // 2. coordonnees des 8 coins de cette maille
+    float cornerCoordsRcv[8][3];
+    I = 0;
+    for (int k : nodes_corner)
+    {
+      for (int j : nodes_corner)
+      {
+        for (int i : nodes_corner)
+        {
+          int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[r], i, j, k);
+          cornerCoordsRcv[I][0] = m_mesh->nodeCoord(nodeIdx, 0);
+          cornerCoordsRcv[I][2] = m_mesh->nodeCoord(nodeIdx, 2);
+          cornerCoordsRcv[I][1] = m_mesh->nodeCoord(nodeIdx, 1);
+          I++;
+        }
+      }
+    }
+
+    // 3. poids d'interpolation (dans le tableau temporaire)
+    switch (order)
+    {
+      case 1:
+        SourceAndReceiverUtils::ComputeRHSWeights<1>(
+            cornerCoordsRcv, rcv_coords_[r], tmpWeights);
+        break;
+      case 2:
+        SourceAndReceiverUtils::ComputeRHSWeights<2>(
+            cornerCoordsRcv, rcv_coords_[r], tmpWeights);
+        break;
+      case 3:
+        SourceAndReceiverUtils::ComputeRHSWeights<3>(
+            cornerCoordsRcv, rcv_coords_[r], tmpWeights);
+        break;
+      default:
+        throw std::runtime_error("Unsupported order: " +
+                                 std::to_string(order));
+    }
+
+    // 4. on range les poids dans la ligne r du vrai tableau
+    for (int i = 0; i < nPts; i++) rhsWeightsRcv(r, i) = tmpWeights(0, i);
   }
 }
 
