@@ -229,11 +229,12 @@ void SEMproxy::init_arrays()
   myRHSTerm = allocateArray2D<arrayReal>(myNumberOfRHS, num_sample_, "RHSTerm");
   pnGlobal =
       allocateArray2D<arrayReal>(m_mesh->getNumberOfNodes(), 2, "pnGlobal");
-  pnAtReceiver = allocateArray2D<arrayReal>(1, num_sample_, "pnAtReceiver");
+  const int nRcv = rcv_coords_.size();
+  pnAtReceiver = allocateArray2D<arrayReal>(nRcv, num_sample_, "pnAtReceiver");
   // Receiver
-  rhsElementRcv = allocateVector<vectorInt>(1, "rhsElementRcv");
+  rhsElementRcv = allocateVector<vectorInt>(nRcv, "rhsElementRcv");
   rhsWeightsRcv = allocateArray2D<arrayReal>(
-      1, m_mesh->getNumberOfPointsPerElement(), "RHSWeightRcv");
+      nRcv, m_mesh->getNumberOfPointsPerElement(), "RHSWeightRcv");
 }
 
 // Initialize sources
