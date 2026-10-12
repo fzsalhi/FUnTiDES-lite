@@ -1,11 +1,12 @@
 #pragma once
-
 #include <cxxopts.hpp>
 #include <stdexcept>
 #include <string>
 
+
 class SemProxyOptions
 {
+
  public:
   // Defaults
   int order = 2;
@@ -13,6 +14,9 @@ class SemProxyOptions
   float lx = 2000.f, ly = 2000.f, lz = 2000.f;
   float srcx = 1010.f, srcy = 1010.f, srcz = 1010.f;
   float rcvx = 1410.f, rcvy = 1010.f, rcvz = 1010.f;
+  //sismos: fichier d'entrée des récepteurs et CSV de sortie
+  std::string rcv_file = "";
+  std::string sismo_file = "sismos.csv";
   std::string implem = "makutu";  // makutu|shiva
   std::string method = "sem";     // sem|dg
   std::string mesh = "cartesian";
@@ -39,7 +43,6 @@ class SemProxyOptions
     if (is_snapshots && snap_time_interval <= 0)
       throw std::runtime_error("snap-time-interval must be > 0");
   }
-
   // Bind CLI flags to this instance (no --help here)
   static void bind_cli(cxxopts::Options& opts, SemProxyOptions& o)
   {
@@ -75,12 +78,16 @@ class SemProxyOptions
         "Boolean to tell if the model is charged on nodes (true) or on element "
         "(false)",
         cxxopts::value<bool>(o.isModelOnNodes))(
-          "is-elastic", "Elastic simulation", cxxopts::value<bool>(o.isElastic))(
-            "is-snapshots", "Save pressure snapshots (binary)",
-            cxxopts::value<bool>(o.is_snapshots))(
-            "snap-time-interval", "Number of time steps between two snapshots",
-            cxxopts::value<int>(o.snap_time_interval))(
-            "snap-folder", "Output folder for snapshots",
-            cxxopts::value<std::string>(o.snap_folder));
+        "is-elastic", "Elastic simulation", cxxopts::value<bool>(o.isElastic))(
+        "rcv-file", "Input file with receiver positions (one x,y,z per line)",
+        cxxopts::value<std::string>(o.rcv_file))(
+        "sismo-file", "Output CSV file for the sismos (default sismos.csv)",
+        cxxopts::value<std::string>(o.sismo_file))(
+        "is-snapshots", "Save pressure snapshots (binary)",
+        cxxopts::value<bool>(o.is_snapshots))(
+        "snap-time-interval", "Number of time steps between two snapshots",
+        cxxopts::value<int>(o.snap_time_interval))(
+        "snap-folder", "Output folder for snapshots",
+        cxxopts::value<std::string>(o.snap_folder));
   }
 };

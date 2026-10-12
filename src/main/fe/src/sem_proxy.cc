@@ -6,12 +6,10 @@
 //************************************************************************
 
 #include "sem_proxy.h"
-
 #include <cartesian_struct_builder.h>
 #include <cartesian_unstruct_builder.h>
 #include <sem_solver_acoustic.h>
 #include <source_and_receiver_utils.h>
-
 #include <cxxopts.hpp>
 #include <iomanip>
 #include <iostream>
@@ -21,8 +19,10 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
-using namespace SourceAndReceiverUtils;
 
+
+
+using namespace SourceAndReceiverUtils;
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
 {
   const int order = opt.order;
@@ -32,7 +32,6 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   nb_nodes_[0] = opt.ex * order + 1;
   nb_nodes_[1] = opt.ey * order + 1;
   nb_nodes_[2] = opt.ez * order + 1;
-
   const float spongex = opt.boundaries_size;
   const float spongey = opt.boundaries_size;
   const float spongez = opt.boundaries_size;
@@ -40,15 +39,19 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   src_coord_[0] = opt.srcx;
   src_coord_[1] = opt.srcy;
   src_coord_[2] = opt.srcz;
-
   domain_size_[0] = opt.lx;
   domain_size_[1] = opt.ly;
   domain_size_[2] = opt.lz;
-
   rcv_coord_[0] = opt.rcvx;
   rcv_coord_[1] = opt.rcvy;
   rcv_coord_[2] = opt.rcvz;
-
+    // sismos : liste des recepteurs
+  if (opt.rcv_file.empty())
+    rcv_coords_.push_back(rcv_coord_);  // pas de fichier : ancien recepteur unique
+  else
+    rcv_coords_ = readReceivers(opt.rcv_file);
+  sismo_file_ = opt.sismo_file;
+  std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
   bool isModelOnNodes = opt.isModelOnNodes;
   isElastic_ = opt.isElastic;
   is_snapshots_ = opt.is_snapshots;
@@ -56,7 +59,6 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   snap_folder_ = opt.snap_folder;
   cout << boolalpha;
   bool isElastic = isElastic_;
-
   const SolverFactory::methodType methodType = getMethod(opt.method);
   const SolverFactory::implemType implemType = getImplem(opt.implem);
   const SolverFactory::meshType meshType = getMesh(opt.mesh);
@@ -64,14 +66,12 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
       isModelOnNodes ? SolverFactory::modelLocationType::OnNodes
                      : SolverFactory::modelLocationType::OnElements;
   const SolverFactory::physicType physicType = SolverFactory::physicType::Acoustic;
-
   float lx = domain_size_[0];
   float ly = domain_size_[1];
   float lz = domain_size_[2];
   int ex = nb_elements_[0];
   int ey = nb_elements_[1];
   int ez = nb_elements_[2];
-
   if (meshType == SolverFactory::Struct)
   {
     switch (order)
@@ -110,7 +110,6 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   {
     throw std::runtime_error("Incorrect mesh type (SEMproxy ctor.)");
   }
-
   // time parameters
   if (opt.autodt)
   {
@@ -123,14 +122,11 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   }
   timemax_ = opt.timemax;
   num_sample_ = timemax_ / dt_;
-
   m_solver = SolverFactory::createSolver(methodType, implemType, meshType,
                                          modelLocation, physicType, order);
   m_solver->computeFEInit(*m_mesh, sponge_size, opt.surface_sponge,
                           opt.taper_delta);
-
   initFiniteElem();
-
   std::cout << "Number of node is " << m_mesh->getNumberOfNodes() << std::endl;
   std::cout << "Number of element is " << m_mesh->getNumberOfElements()
             << std::endl;
@@ -143,97 +139,119 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   std::cout << "Order of approximation will be " << order << std::endl;
   std::cout << "Time step is " << dt_ << "s" << std::endl;
   std::cout << "Simulated time is " << timemax_ << "s" << std::endl;
-
 }
-
 void SEMproxy::run()
 {
   time_point<system_clock> startComputeTime, startOutputTime, totalComputeTime,
       totalOutputTime;
-
   SEMsolverDataAcoustic solverData(i1, i2, myRHSTerm, pnGlobal, rhsElement,
                                    rhsWeights);
-
   for (int indexTimeSample = 0; indexTimeSample < num_sample_;
        indexTimeSample++)
   {
     startComputeTime = system_clock::now();
     m_solver->computeOneStep(dt_, indexTimeSample, solverData);
     totalComputeTime += system_clock::now() - startComputeTime;
-
     startOutputTime = system_clock::now();
-
     if (indexTimeSample % 50 == 0)
     {
       m_solver->outputSolutionValues(indexTimeSample, i1, rhsElement[0],
                                      pnGlobal, "pnGlobal");
     }
-
-    // Save pressure at receiver
+    // Save pressure at each receiver
     const int order = m_mesh->getOrder();
-
-    float varnp1 = 0.0;
-    for (int i = 0; i < order + 1; i++)
+    // sismos : meme calcul qu'avant, repete pour chaque recepteur r
+    for (int r = 0; r < (int)rcv_coords_.size(); r++)
     {
-      for (int j = 0; j < order + 1; j++)
+      float varnp1 = 0.0;
+      for (int i = 0; i < order + 1; i++)
       {
-        for (int k = 0; k < order + 1; k++)
+        for (int j = 0; j < order + 1; j++)
         {
-          int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[0], i, j, k);
-          int globalNodeOnElement =
-              i + j * (order + 1) + k * (order + 1) * (order + 1);
-          varnp1 +=
-              pnGlobal(nodeIdx, i2) * rhsWeightsRcv(0, globalNodeOnElement);
+          for (int k = 0; k < order + 1; k++)
+          {
+            // noeud (i,j,k) de la maille du recepteur r
+            int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[r], i, j, k);
+            int globalNodeOnElement =
+                i + j * (order + 1) + k * (order + 1) * (order + 1);
+            // pression du noeud x poids d'interpolation du recepteur r
+            varnp1 += pnGlobal(nodeIdx, i2) *
+                      rhsWeightsRcv(r, globalNodeOnElement);
+          }
         }
       }
+      // ligne r = sismo du recepteur r, colonne = pas de temps
+      pnAtReceiver(r, indexTimeSample) = varnp1;
     }
-
-    pnAtReceiver(0, indexTimeSample) = varnp1;
     if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)
     {
       saveSnapshot(indexTimeSample);
     }
     swap(i1, i2);
-
     auto tmp = solverData.m_i1;
     solverData.m_i1 = solverData.m_i2;
     solverData.m_i2 = tmp;
-
     totalOutputTime += system_clock::now() - startOutputTime;
   }
-
   float kerneltime_ms = time_point_cast<microseconds>(totalComputeTime)
                             .time_since_epoch()
                             .count();
   float outputtime_ms =
       time_point_cast<microseconds>(totalOutputTime).time_since_epoch().count();
-
   cout << "------------------------------------------------ " << endl;
   cout << "\n---- Elapsed Kernel Time : " << kerneltime_ms / 1E6 << " seconds."
        << endl;
   cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
        << endl;
   cout << "------------------------------------------------ " << endl;
+  // Save all receiver seismograms to CSV
+  if (!sismo_file_.empty())
+  {
+    std::ofstream sismoFile(sismo_file_);
+    if (!sismoFile)
+    {
+      std::cerr << "Error: cannot open sismo file: "
+                << sismo_file_ << std::endl;
+    }
+    else
+    {
+      sismoFile << "time";
+      for (int r = 0; r < (int)rcv_coords_.size(); r++)
+      {
+        sismoFile << ",receiver_" << r;
+      }
+      sismoFile << '\n';
+      sismoFile << std::setprecision(9);
+      for (int t = 0; t < num_sample_; t++)
+      {
+        sismoFile << t * dt_;
+        for (int r = 0; r < (int)rcv_coords_.size(); r++)
+        {
+          sismoFile << "," << pnAtReceiver(r, t);
+        }
+        sismoFile << '\n';
+      }
+      std::cout << "Seismograms saved to " << sismo_file_ << std::endl;
+    }
+  }  
 }
-
 // Initialize arrays
 void SEMproxy::init_arrays()
 {
   cout << "Allocate host memory for source and pressure values ..." << endl;
-
   rhsElement = allocateVector<vectorInt>(myNumberOfRHS, "rhsElement");
   rhsWeights = allocateArray2D<arrayReal>(
       myNumberOfRHS, m_mesh->getNumberOfPointsPerElement(), "RHSWeight");
   myRHSTerm = allocateArray2D<arrayReal>(myNumberOfRHS, num_sample_, "RHSTerm");
   pnGlobal =
       allocateArray2D<arrayReal>(m_mesh->getNumberOfNodes(), 2, "pnGlobal");
-  pnAtReceiver = allocateArray2D<arrayReal>(1, num_sample_, "pnAtReceiver");
+  const int nRcv = rcv_coords_.size();
+  pnAtReceiver = allocateArray2D<arrayReal>(nRcv, num_sample_, "pnAtReceiver");
   // Receiver
-  rhsElementRcv = allocateVector<vectorInt>(1, "rhsElementRcv");
+  rhsElementRcv = allocateVector<vectorInt>(nRcv, "rhsElementRcv");
   rhsWeightsRcv = allocateArray2D<arrayReal>(
-      1, m_mesh->getNumberOfPointsPerElement(), "RHSWeightRcv");
+      nRcv, m_mesh->getNumberOfPointsPerElement(), "RHSWeightRcv");
 }
-
 // Initialize sources
 void SEMproxy::init_source()
 {
@@ -245,22 +263,17 @@ void SEMproxy::init_source()
   int ex = nb_elements_[0];
   int ey = nb_elements_[1];
   int ez = nb_elements_[2];
-
   int lx = domain_size_[0];
   int ly = domain_size_[1];
   int lz = domain_size_[2];
-
   // Get source element index
-
   int source_index = floor((src_coord_[0] * ex) / lx) +
                      floor((src_coord_[1] * ey) / ly) * ex +
                      floor((src_coord_[2] * ez) / lz) * ey * ex;
-
   for (int i = 0; i < 1; i++)
   {
     rhsElement[i] = source_index;
   }
-
   // Get coordinates of the corners of the sourc element
   float cornerCoords[8][3];
   int I = 0;
@@ -279,7 +292,6 @@ void SEMproxy::init_source()
       }
     }
   }
-
   // initialize source term
   vector<float> sourceTerm =
       myUtils.computeSourceTerm(num_sample_, dt_, f0, sourceOrder);
@@ -289,14 +301,11 @@ void SEMproxy::init_source()
     if (j % 100 == 0)
       cout << "Sample " << j << "\t: sourceTerm = " << sourceTerm[j] << endl;
   }
-
   // get element number of source term
   myElementSource = rhsElement[0];
   cout << "Element number for the source location: " << myElementSource << endl
        << endl;
-
   int order = m_mesh->getOrder();
-
   switch (order)
   {
     case 1:
@@ -314,106 +323,99 @@ void SEMproxy::init_source()
     default:
       throw std::runtime_error("Unsupported order: " + std::to_string(order));
   }
-
-  // Receiver computation
-  int receiver_index = floor((rcv_coord_[0] * ex) / lx) +
-                       floor((rcv_coord_[1] * ey) / ly) * ex +
-                       floor((rcv_coord_[2] * ez) / lz) * ey * ex;
-
-  for (int i = 0; i < 1; i++)
+  // Receivers computation : meme travail qu'avant, mais pour CHAQUE recepteur
+  const int nPts = m_mesh->getNumberOfPointsPerElement();
+  // ComputeRHSWeights ecrit toujours dans la ligne 0 du tableau qu'on lui
+  // donne : on lui donne un tableau temporaire d'1 ligne, puis on recopie
+  arrayReal tmpWeights = allocateArray2D<arrayReal>(1, nPts, "tmpRcvWeights");
+  for (int r = 0; r < (int)rcv_coords_.size(); r++)
   {
-    rhsElementRcv[i] = receiver_index;
-  }
-
-  // Get coordinates of the corners of the receiver element
-  float cornerCoordsRcv[8][3];
-  I = 0;
-  for (int k : nodes_corner)
-  {
-    for (int j : nodes_corner)
+    // 1. maille qui contient le recepteur r
+    int receiver_index = floor((rcv_coords_[r][0] * ex) / lx) +
+                         floor((rcv_coords_[r][1] * ey) / ly) * ex +
+                         floor((rcv_coords_[r][2] * ez) / lz) * ey * ex;
+    rhsElementRcv[r] = receiver_index;
+    cout << "Receiver " << r << " is in element " << receiver_index << endl;
+    // 2. coordonnees des 8 coins de cette maille
+    float cornerCoordsRcv[8][3];
+    I = 0;
+    for (int k : nodes_corner)
     {
-      for (int i : nodes_corner)
+      for (int j : nodes_corner)
       {
-        int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[0], i, j, k);
-        cornerCoordsRcv[I][0] = m_mesh->nodeCoord(nodeIdx, 0);
-        cornerCoordsRcv[I][2] = m_mesh->nodeCoord(nodeIdx, 2);
-        cornerCoordsRcv[I][1] = m_mesh->nodeCoord(nodeIdx, 1);
-        I++;
+        for (int i : nodes_corner)
+        {
+          int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[r], i, j, k);
+          cornerCoordsRcv[I][0] = m_mesh->nodeCoord(nodeIdx, 0);
+          cornerCoordsRcv[I][2] = m_mesh->nodeCoord(nodeIdx, 2);
+          cornerCoordsRcv[I][1] = m_mesh->nodeCoord(nodeIdx, 1);
+          I++;
+        }
       }
     }
-  }
-
-  switch (order)
-  {
-    case 1:
-      SourceAndReceiverUtils::ComputeRHSWeights<1>(cornerCoordsRcv, rcv_coord_,
-                                                   rhsWeightsRcv);
-      break;
-    case 2:
-      SourceAndReceiverUtils::ComputeRHSWeights<2>(cornerCoordsRcv, rcv_coord_,
-                                                   rhsWeightsRcv);
-      break;
-    case 3:
-      SourceAndReceiverUtils::ComputeRHSWeights<3>(cornerCoordsRcv, rcv_coord_,
-                                                   rhsWeightsRcv);
-      break;
-    default:
-      throw std::runtime_error("Unsupported order: " + std::to_string(order));
+    // 3. poids d'interpolation (dans le tableau temporaire)
+    switch (order)
+    {
+      case 1:
+        SourceAndReceiverUtils::ComputeRHSWeights<1>(
+            cornerCoordsRcv, rcv_coords_[r], tmpWeights);
+        break;
+      case 2:
+        SourceAndReceiverUtils::ComputeRHSWeights<2>(
+            cornerCoordsRcv, rcv_coords_[r], tmpWeights);
+        break;
+      case 3:
+        SourceAndReceiverUtils::ComputeRHSWeights<3>(
+            cornerCoordsRcv, rcv_coords_[r], tmpWeights);
+        break;
+      default:
+        throw std::runtime_error("Unsupported order: " +
+                                 std::to_string(order));
+    }
+    // 4. on range les poids dans la ligne r du vrai tableau
+    for (int i = 0; i < nPts; i++) rhsWeightsRcv(r, i) = tmpWeights(0, i);
   }
 }
-
 SolverFactory::implemType SEMproxy::getImplem(string implemArg)
 {
   if (implemArg == "makutu") return SolverFactory::MAKUTU;
   if (implemArg == "shiva") return SolverFactory::SHIVA;
-
   throw std::invalid_argument(
       "Implentation type does not follow any valid type.");
 }
-
 SolverFactory::meshType SEMproxy::getMesh(string meshArg)
 {
   if (meshArg == "cartesian") return SolverFactory::Struct;
   if (meshArg == "ucartesian") return SolverFactory::Unstruct;
-
   std::cout << "Mesh type found is " << meshArg << std::endl;
   throw std::invalid_argument("Mesh type does not follow any valid type.");
 }
-
 SolverFactory::methodType SEMproxy::getMethod(string methodArg)
 {
   if (methodArg == "sem") return SolverFactory::SEM;
   if (methodArg == "dg") return SolverFactory::DG;
-
   throw std::invalid_argument("Method type does not follow any valid type.");
 }
-
 float SEMproxy::find_cfl_dt(float cfl_factor)
 {
   float sqrtDim3 = 1.73;  // to change for 2d
   float min_spacing = m_mesh->getMinSpacing();
   float v_max = m_mesh->getMaxSpeed();
-
   float dt = cfl_factor * min_spacing / (sqrtDim3 * v_max);
-
   return dt;
 }
 void SEMproxy::saveSnapshot(int timestep)
 {
   const int nbNodes = m_mesh->getNumberOfNodes();
   std::filesystem::create_directories(snap_folder_);
-
   char filename[256];
   snprintf(filename, sizeof(filename), "%s/snapshot_it_%06d.csv",
            snap_folder_.c_str(), timestep);
-
   std::ofstream file(filename);
   if (!file.is_open())
     throw std::runtime_error("Impossible d'ouvrir le fichier snapshot CSV.");
-
   file << "x,y,z,pressure\n";
   file << std::setprecision(9);
-
   for (int n = 0; n < nbNodes; ++n)
   {
     file << m_mesh->nodeCoord(n, 0) << ','
@@ -421,7 +423,36 @@ void SEMproxy::saveSnapshot(int timestep)
          << m_mesh->nodeCoord(n, 2) << ','
          << pnGlobal(n, i2) << '\n';
   }
-
   if (!file)
     throw std::runtime_error("Erreur pendant l'ecriture du snapshot CSV.");
+}
+// sismos : lit le fichier des recepteurs.
+// Une ligne = un recepteur "x,y,z" (virgules, espaces ou ';' acceptes).
+// Les lignes vides, les commentaires '#' et un eventuel en-tete texte
+// sont ignores.
+std::vector<std::array<float, 3>> SEMproxy::readReceivers(
+    const std::string& filename)
+{
+  std::ifstream in(filename);
+  if (!in) throw std::runtime_error("Cannot open receivers file: " + filename);
+  std::vector<std::array<float, 3>> rcvs;
+  std::string line;
+  while (std::getline(in, line))
+  {
+    // 1. on enleve le commentaire eventuel (tout ce qui suit '#')
+    auto hash = line.find('#');
+    if (hash != std::string::npos) line.erase(hash);
+    // 2. on remplace les separateurs par des espaces
+    //    ('\r' : fin de ligne d'un fichier cree sous Windows)
+    for (char& ch : line)
+      if (ch == ',' || ch == ';' || ch == '\r') ch = ' ';
+    // 3. on essaie de lire 3 nombres ; si la ligne est vide ou si c'est
+    //    un en-tete texte, la lecture echoue et on passe a la suivante
+    std::istringstream iss(line);
+    std::array<float, 3> c;
+    if (iss >> c[0] >> c[1] >> c[2]) rcvs.push_back(c);
+  }
+  if (rcvs.empty())
+    throw std::runtime_error("No receiver found in file: " + filename);
+  return rcvs;
 }
