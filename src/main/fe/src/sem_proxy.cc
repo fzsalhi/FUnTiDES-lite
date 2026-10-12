@@ -174,27 +174,32 @@ void SEMproxy::run()
                                      pnGlobal, "pnGlobal");
     }
 
-    // Save pressure at receiver
+    // Save pressure at each receiver
     const int order = m_mesh->getOrder();
 
-    float varnp1 = 0.0;
-    for (int i = 0; i < order + 1; i++)
+    // sismos : meme calcul qu'avant, repete pour chaque recepteur r
+    for (int r = 0; r < (int)rcv_coords_.size(); r++)
     {
-      for (int j = 0; j < order + 1; j++)
+      float varnp1 = 0.0;
+      for (int i = 0; i < order + 1; i++)
       {
-        for (int k = 0; k < order + 1; k++)
+        for (int j = 0; j < order + 1; j++)
         {
-          int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[0], i, j, k);
-          int globalNodeOnElement =
-              i + j * (order + 1) + k * (order + 1) * (order + 1);
-          varnp1 +=
-              pnGlobal(nodeIdx, i2) * rhsWeightsRcv(0, globalNodeOnElement);
+          for (int k = 0; k < order + 1; k++)
+          {
+            // noeud (i,j,k) de la maille du recepteur r
+            int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[r], i, j, k);
+            int globalNodeOnElement =
+                i + j * (order + 1) + k * (order + 1) * (order + 1);
+            // pression du noeud x poids d'interpolation du recepteur r
+            varnp1 += pnGlobal(nodeIdx, i2) *
+                      rhsWeightsRcv(r, globalNodeOnElement);
+          }
         }
       }
+      // ligne r = sismo du recepteur r, colonne = pas de temps
+      pnAtReceiver(r, indexTimeSample) = varnp1;
     }
-
-    pnAtReceiver(0, indexTimeSample) = varnp1;
-
     swap(i1, i2);
 
     auto tmp = solverData.m_i1;
@@ -216,6 +221,40 @@ void SEMproxy::run()
   cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
        << endl;
   cout << "------------------------------------------------ " << endl;
+  
+  
+  // Save all receiver seismograms to CSV
+  if (!sismo_file_.empty())
+  {
+    std::ofstream sismoFile(sismo_file_);
+    if (!sismoFile)
+    {
+      std::cerr << "Error: cannot open sismo file: "
+                << sismo_file_ << std::endl;
+    }
+    else
+    {
+      sismoFile << "time";
+      for (int r = 0; r < (int)rcv_coords_.size(); r++)
+      {
+        sismoFile << ",receiver_" << r;
+      }
+      sismoFile << '\n';
+
+      sismoFile << std::setprecision(9);
+      for (int t = 0; t < num_sample_; t++)
+      {
+        sismoFile << t * dt_;
+        for (int r = 0; r < (int)rcv_coords_.size(); r++)
+        {
+          sismoFile << "," << pnAtReceiver(r, t);
+        }
+        sismoFile << '\n';
+      }
+
+      std::cout << "Seismograms saved to " << sismo_file_ << std::endl;
+    }
+  }  
 }
 
 // Initialize arrays
