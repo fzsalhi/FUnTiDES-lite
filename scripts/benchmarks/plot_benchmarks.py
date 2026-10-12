@@ -168,8 +168,8 @@ def io_bandwidth_values(groups, thread_counts):
     for threads in thread_counts:
         rows = groups.get((threads, 1), [])
         size_mib = average(rows, "snapshot_csv_mib")
-        output_s = average(rows, "output_s")
-        values.append(positive_ratio(size_mib, output_s))
+        save_s = average(rows, "snapshot_save_s")
+        values.append(positive_ratio(size_mib, save_s))
     return values
 
 
@@ -221,6 +221,17 @@ def main():
             ),
         ]
 
+        save_series = [
+            (
+                "Sans snapshots",
+                [average(groups[(threads, 0)], "snapshot_save_s") for threads in thread_counts],
+            ),
+            (
+                "Avec snapshots",
+                [average(groups[(threads, 1)], "snapshot_save_s") for threads in thread_counts],
+            ),
+        ]
+
         plot_lines(
             "simulation_time.png",
             "Temps moyen SEM : avec et sans snapshots",
@@ -245,6 +256,14 @@ def main():
             output_series,
         )
 
+        plot_lines(
+            "snapshot_save_time.png",
+            "Temps de sauvegarde des snapshots",
+            "Temps moyen (secondes)",
+            thread_counts,
+            save_series,
+        )
+
         phase_without = [
             (
                 "Initialisation",
@@ -257,6 +276,10 @@ def main():
             (
                 "Output",
                 [average(groups[(threads, 0)], "output_s") for threads in thread_counts],
+            ),
+            (
+                "Sauvegarde",
+                [average(groups[(threads, 0)], "snapshot_save_s") for threads in thread_counts],
             ),
         ]
 
@@ -272,6 +295,10 @@ def main():
             (
                 "Output",
                 [average(groups[(threads, 1)], "output_s") for threads in thread_counts],
+            ),
+            (
+                "Sauvegarde",
+                [average(groups[(threads, 1)], "snapshot_save_s") for threads in thread_counts],
             ),
         ]
 
@@ -351,7 +378,7 @@ def main():
             "Debit I/O effectif des snapshots",
             "Debit (MiB/s)",
             thread_counts,
-            [("CSV / Output SEM", io_bandwidth_values(groups, thread_counts))],
+            [("CSV / Sauvegarde", io_bandwidth_values(groups, thread_counts))],
         )
 
     else:
@@ -413,11 +440,24 @@ def main():
 
         if enabled == 1:
             plot_lines(
+                "snapshot_save_time.png",
+                "Temps de sauvegarde des snapshots",
+                "Temps moyen (secondes)",
+                thread_counts,
+                [
+                    (
+                        label,
+                        [average(groups[(threads, enabled)], "snapshot_save_s") for threads in thread_counts],
+                    )
+                ],
+            )
+
+            plot_lines(
                 "io_bandwidth.png",
                 "Debit I/O effectif des snapshots",
                 "Debit (MiB/s)",
                 thread_counts,
-                [("CSV / Output SEM", io_bandwidth_values(groups, thread_counts))],
+                [("CSV / Sauvegarde", io_bandwidth_values(groups, thread_counts))],
             )
 
 

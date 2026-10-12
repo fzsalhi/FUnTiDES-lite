@@ -104,6 +104,7 @@ def get_solver_times(output):
         "kernel_s": extract_time(output, rf"Elapsed\s+Kernel\s+Time\s*:\s*{number}"),
         "add_rhs_s": "",
         "output_s": extract_time(output, rf"Elapsed\s+Output\s+Time\s*:\s*{number}"),
+        "snapshot_save_s": extract_time(output, rf"Elapsed\s+Save\s+Time\s*:\s*{number}"),
     }
 
     times["compute_s"] = times["kernel_s"] if times["kernel_s"] != "" else ""
@@ -242,6 +243,7 @@ def run_once(threads, repetition, batch_id, snapshot_script, snapshots_enabled):
         "--implem", "makutu",
         "--dt", str(DT),
         "--timemax", str(TIMEMAX),
+        "--sismo-file", "",
     ]
 
     if snapshots_enabled:
@@ -249,6 +251,10 @@ def run_once(threads, repetition, batch_id, snapshot_script, snapshots_enabled):
             "--is-snapshots=true",
             "--snap-time-interval", str(SNAP_INTERVAL),
             "--snap-folder", str(DATA_DIR),
+        ])
+    else:
+        command.extend([
+            "--is-snapshots=false",
         ])
 
     start = time.perf_counter()
@@ -291,8 +297,7 @@ def run_once(threads, repetition, batch_id, snapshot_script, snapshots_enabled):
         "data_status": "generated_this_run" if snapshots_enabled else "snapshots_disabled",
         "simulation_wall_s": simulation_wall,
         **solver_times,
-        "snapshot_save_s": "",
-        "save_time_status": "included_in_output_not_isolated" if snapshots_enabled else "disabled",
+        "save_time_status": "isolated" if snapshots_enabled else "disabled",
         "snapshots_viz_s": snapshots_viz,
         "workflow_wall_s": workflow_wall,
         "snapshot_csv_count": snapshot_count,
@@ -320,7 +325,7 @@ def print_means(threads, rows, runs, snapshots_enabled):
     show_mean("Output SEM", rows, "output_s")
 
     if snapshots_enabled:
-        print(f"  {'Sauvegarde snapshots seule':<42} non mesuree separement")
+        show_mean("Sauvegarde snapshots", rows, "snapshot_save_s")
         show_mean("Visualisation snapshots", rows, "snapshots_viz_s")
 
     show_mean("TOTAL workflow execute", rows, "workflow_wall_s")
@@ -394,9 +399,9 @@ def print_hpc_metrics(all_rows, thread_counts, compare_snapshots):
     for threads in thread_counts:
         rows = all_rows.get((threads, 1), [])
         size_mib = mean_value(rows, "snapshot_csv_mib")
-        output_s = mean_value(rows, "output_s")
+        save_s = mean_value(rows, "snapshot_save_s")
 
-        bandwidth = safe_ratio(size_mib, output_s)
+        bandwidth = safe_ratio(size_mib, save_s)
 
         if bandwidth is not None:
             print(f"  {threads:<10}{bandwidth:.3f}")
@@ -404,7 +409,7 @@ def print_hpc_metrics(all_rows, thread_counts, compare_snapshots):
     print("\nSpeedup = T(1) / T(p)")
     print("Efficacite = Speedup / p * 100")
     print("Overhead snapshots (%) = (Tavec - Tsans) / Tsans * 100")
-    print("Debit I/O = taille CSV / temps Output SEM")
+    print("Debit I/O = taille CSV / temps de sauvegarde")
 
 
 def main():
@@ -473,6 +478,7 @@ def main():
                 )
 
                 if snapshots_enabled:
+                    line += f" | Sauvegarde snapshots : {float(row['snapshot_save_s']):.6f} s"
                     line += f" | Visualisation snapshots : {row['snapshots_viz_s']:.6f} s"
 
                 line += f" | Workflow : {row['workflow_wall_s']:.6f} s"
@@ -489,12 +495,9 @@ def main():
         print(
             "La difference de temps SEM entre les deux courbes mesure le surcout global des snapshots."
         )
-        print("Le temps exact de saveSnapshot n'est pas isole separement.")
+        print("Le temps de sauvegarde des snapshots est mesure separement.")
     else:
-        print(
-            "Output SEM contient le cout des sorties, y compris les snapshots, "
-            "mais le temps de sauvegarde snapshot n'est pas isole."
-        )
+        print("Le temps de sauvegarde des snapshots est mesure separement.")
 
     print("\nCreation des graphiques...", flush=True)
 

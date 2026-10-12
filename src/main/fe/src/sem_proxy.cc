@@ -4,7 +4,6 @@
 //  semproxy.cpp: the main interface of  proxy application
 //
 //************************************************************************
-
 #include "sem_proxy.h"
 #include <cartesian_struct_builder.h>
 #include <cartesian_unstruct_builder.h>
@@ -19,9 +18,6 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
-
-
-
 using namespace SourceAndReceiverUtils;
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
 {
@@ -142,8 +138,8 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
 }
 void SEMproxy::run()
 {
-  time_point<system_clock> startComputeTime, startOutputTime, totalComputeTime,
-      totalOutputTime;
+  time_point<system_clock> startComputeTime, startOutputTime, startSaveTime,
+      totalComputeTime, totalOutputTime, totalSaveTime;
   SEMsolverDataAcoustic solverData(i1, i2, myRHSTerm, pnGlobal, rhsElement,
                                    rhsWeights);
   for (int indexTimeSample = 0; indexTimeSample < num_sample_;
@@ -185,7 +181,9 @@ void SEMproxy::run()
     }
     if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)
     {
+      startSaveTime = system_clock::now();
       saveSnapshot(indexTimeSample);
+      totalSaveTime += system_clock::now() - startSaveTime;
     }
     swap(i1, i2);
     auto tmp = solverData.m_i1;
@@ -207,33 +205,44 @@ void SEMproxy::run()
   // Save all receiver seismograms to CSV
   if (!sismo_file_.empty())
   {
-    std::ofstream sismoFile(sismo_file_);
-    if (!sismoFile)
+    startSaveTime = system_clock::now();
+    bool sismoSaved = false;
     {
-      std::cerr << "Error: cannot open sismo file: "
-                << sismo_file_ << std::endl;
-    }
-    else
-    {
-      sismoFile << "time";
-      for (int r = 0; r < (int)rcv_coords_.size(); r++)
+      std::ofstream sismoFile(sismo_file_);
+      if (!sismoFile)
       {
-        sismoFile << ",receiver_" << r;
+        std::cerr << "Error: cannot open sismo file: "
+                  << sismo_file_ << std::endl;
       }
-      sismoFile << '\n';
-      sismoFile << std::setprecision(9);
-      for (int t = 0; t < num_sample_; t++)
+      else
       {
-        sismoFile << t * dt_;
+        sismoFile << "time";
         for (int r = 0; r < (int)rcv_coords_.size(); r++)
         {
-          sismoFile << "," << pnAtReceiver(r, t);
+          sismoFile << ",receiver_" << r;
         }
         sismoFile << '\n';
+        sismoFile << std::setprecision(9);
+        for (int t = 0; t < num_sample_; t++)
+        {
+          sismoFile << t * dt_;
+          for (int r = 0; r < (int)rcv_coords_.size(); r++)
+          {
+            sismoFile << "," << pnAtReceiver(r, t);
+          }
+          sismoFile << '\n';
+        }
+        sismoSaved = true;
       }
-      std::cout << "Seismograms saved to " << sismo_file_ << std::endl;
     }
-  }  
+    totalSaveTime += system_clock::now() - startSaveTime;
+    if (sismoSaved)
+      std::cout << "Seismograms saved to " << sismo_file_ << std::endl;
+  }
+  float savetime_ms =
+      time_point_cast<microseconds>(totalSaveTime).time_since_epoch().count();
+  cout << "---- Elapsed Save Time : " << savetime_ms / 1E6 << " seconds."
+       << endl;
 }
 // Initialize arrays
 void SEMproxy::init_arrays()
