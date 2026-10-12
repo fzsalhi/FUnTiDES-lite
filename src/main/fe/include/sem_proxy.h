@@ -17,6 +17,7 @@
 #include <memory>
 #include <string>
 #include <variant>
+#include <vector>
 
 #include "sem_proxy_options.h"
 
@@ -86,6 +87,10 @@ class SEMproxy
   int nb_nodes_[3] = {0};
   std::array<float, 3> src_coord_ = {0};
   std::array<float, 3> rcv_coord_ = {0};
+  // sismos : positions de TOUS les recepteurs ({x, y, z} chacun)
+  std::vector<std::array<float, 3>> rcv_coords_;
+  // sismos : nom du fichier CSV de sortie
+  std::string sismo_file_;
   float domain_size_[3] = {0};
 
   // snapshots
@@ -118,6 +123,10 @@ class SEMproxy
   arrayReal rhsWeights;
   arrayReal rhsWeightsRcv;
   arrayReal pnAtReceiver;
+  //sismos: lit le fichier des recepteurs
+  //et renvois la liste des positions
+  static std::vector<std::array<float, 3>> readReceivers(
+     const std::string& filename);
 
   // initialize source and RHS
   void init_source();

@@ -18,6 +18,9 @@
 #include <sstream>
 #include <variant>
 
+#include <fstream>
+#include <sstream>
+
 using namespace SourceAndReceiverUtils;
 
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
@@ -45,6 +48,14 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   rcv_coord_[0] = opt.rcvx;
   rcv_coord_[1] = opt.rcvy;
   rcv_coord_[2] = opt.rcvz;
+
+    // sismos : liste des recepteurs
+  if (opt.rcv_file.empty())
+    rcv_coords_.push_back(rcv_coord_);  // pas de fichier : ancien recepteur unique
+  else
+    rcv_coords_ = readReceivers(opt.rcv_file);
+  sismo_file_ = opt.sismo_file;
+  std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
 
   bool isModelOnNodes = opt.isModelOnNodes;
   isElastic_ = opt.isElastic;
@@ -388,4 +399,39 @@ float SEMproxy::find_cfl_dt(float cfl_factor)
   float dt = cfl_factor * min_spacing / (sqrtDim3 * v_max);
 
   return dt;
+}
+
+// sismos : lit le fichier des recepteurs.
+// Une ligne = un recepteur "x,y,z" (virgules, espaces ou ';' acceptes).
+// Les lignes vides, les commentaires '#' et un eventuel en-tete texte
+// sont ignores.
+std::vector<std::array<float, 3>> SEMproxy::readReceivers(
+    const std::string& filename)
+{
+  std::ifstream in(filename);
+  if (!in) throw std::runtime_error("Cannot open receivers file: " + filename);
+
+  std::vector<std::array<float, 3>> rcvs;
+  std::string line;
+  while (std::getline(in, line))
+  {
+    // 1. on enleve le commentaire eventuel (tout ce qui suit '#')
+    auto hash = line.find('#');
+    if (hash != std::string::npos) line.erase(hash);
+
+    // 2. on remplace les separateurs par des espaces
+    //    ('\r' : fin de ligne d'un fichier cree sous Windows)
+    for (char& ch : line)
+      if (ch == ',' || ch == ';' || ch == '\r') ch = ' ';
+
+    // 3. on essaie de lire 3 nombres ; si la ligne est vide ou si c'est
+    //    un en-tete texte, la lecture echoue et on passe a la suivante
+    std::istringstream iss(line);
+    std::array<float, 3> c;
+    if (iss >> c[0] >> c[1] >> c[2]) rcvs.push_back(c);
+  }
+
+  if (rcvs.empty())
+    throw std::runtime_error("No receiver found in file: " + filename);
+  return rcvs;
 }
