@@ -108,10 +108,19 @@ def load_snapshot(path, dtype="float32", col=None):
 def load_coords(path, dtype="float32"):
     return _load_array(path, dtype).reshape(-1, 3)
 
-
 def load_receivers(path):
-    return np.loadtxt(path, comments="#", ndmin=2)[:, :3]
-
+    """Lit x y z par ligne (séparateur espace, virgule ou point-virgule ; '#' = commentaire ; en-tête ignoré)."""
+    rows = []
+    with open(path) as f:
+        for line in f:
+            line = line.split("#")[0].replace(",", " ").replace(";", " ").strip()
+            if not line:
+                continue
+            try:
+                rows.append([float(t) for t in line.split()])
+            except ValueError:
+                continue  # ligne d'en-tête
+    return np.array(rows, ndmin=2)[:, :3]
 
 def load_sismos(path, dt=None):
     """Retourne (t[nt], data[nrec, nt])."""
