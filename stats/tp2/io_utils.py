@@ -1,6 +1,5 @@
 """Utilitaires communs : chargement des sorties du TP1 + chronométrage.
 
-!! Adapter ici si ton format de sortie TP1 diffère (seul fichier à toucher). !!
 Formats supportés par défaut :
   - snapshots : un fichier par snapshot (.csv avec ou sans en-tête, .bin brut, .npy), 1 valeur par noeud.
                 En CSV : 1 colonne (p) ou plusieurs (x,y,z,p) -> p = dernière colonne (ou --col),
