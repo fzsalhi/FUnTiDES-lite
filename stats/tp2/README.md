@@ -18,23 +18,22 @@ Les scripts utilisés sont :
 
 Depuis le répertoire de compilation `build-openmp` :
 
-```bash
 mkdir -p results/snapshots
 
 ./bin/semproxy \
-    --order 4 \
-    --ex 20 --ey 10 --ez 5 \
-    --lx 1000 --ly 500 --lz 200 \
+    --order 3 \
+    --ex 50 --ey 50 --ez 50 \
+    --lx 2000 --ly 2000 --lz 2000 \
+    --implem makutu \
     --mesh cartesian \
     --method sem \
-    --dt 0.001 \
-    --timemax 1.5 \
+    --auto-dt \
+    --timemax 1.0 \
     --rcv-file receivers.csv \
     --sismo-file results/sismos.csv \
     --is-snapshots \
-    --snap-time-interval 10 \
+    --snap-time-interval 50 \
     --snap-folder results/snapshots
-```
 
 Cette commande lance la simulation et demande :
 
@@ -49,10 +48,9 @@ La commande suppose que les options sont compatibles avec la configuration de co
 ## 4. Analyse des snapshots
 
 Lancer :
-
 python analyse_snapshots.py \
     --snap-dir results/snapshots \
-    --dt 0.001 \
+    --dt 0.00298228 \
     --tag S \
     --out results
 
@@ -77,7 +75,7 @@ Lancer :
 python analyse_sismos.py \
     --sismos results/sismos.csv \
     --receivers receivers.csv \
-    --dt 0.001 \
+    --dt 0.00298228 \
     --tag S \
     --out results
 
