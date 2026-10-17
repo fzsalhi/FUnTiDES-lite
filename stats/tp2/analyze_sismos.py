@@ -29,7 +29,7 @@ def main():
     ap.add_argument("--sismos", required=True)
     ap.add_argument("--dt", type=float, default=None, help="requis si le fichier ne contient pas le temps")
     ap.add_argument("--receivers", required=True, help="fichier x y z par ligne (même ordre que les sismos)")
-    ap.add_argument("--source", type=float, nargs=3, required=True)
+    ap.add_argument("--source", type=float, nargs=3, default=None)
     ap.add_argument("--pick-frac", type=float, default=0.05, help="seuil de pointé (fraction du max|s|)")
     ap.add_argument("--out", default="results")
     ap.add_argument("--tag", default="")
@@ -45,8 +45,12 @@ def main():
     nrec, nt = data.shape
     assert rec.shape[0] == nrec, f"{rec.shape[0]} récepteurs dans le fichier de positions, {nrec} sismos"
     dt = float(t[1] - t[0])
-    dist = np.linalg.norm(rec - np.array(a.source), axis=1)
-
+    source = (
+        np.array(a.source)
+        if a.source is not None
+        else 0.5 * (rec.min(axis=0) + rec.max(axis=0))
+    )
+    dist = np.linalg.norm(rec - source, axis=1)
     stats_rows, arr_rows, freqs = [], [], np.fft.rfftfreq(nt, dt)
     spectra = np.zeros((nrec, freqs.size))
     with T("compute"):
