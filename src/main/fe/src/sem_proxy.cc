@@ -1,3 +1,5 @@
+#include <Kokkos_Core.hpp>
+#include <chrono>
 //************************************************************************
 //   proxy application v.0.0.1
 //
@@ -185,6 +187,9 @@ void SEMproxy::run()
       saveSnapshot(indexTimeSample);
       totalSaveTime += system_clock::now() - startSaveTime;
     }
+     // statistiques in situ (provisoire : tous les 50 pas)
+    if (indexTimeSample % 50 == 0)
+      computePressureStatisticsCPU(i1, indexTimeSample);
     swap(i1, i2);
     auto tmp = solverData.m_i1;
     solverData.m_i1 = solverData.m_i2;
@@ -464,4 +469,113 @@ std::vector<std::array<float, 3>> SEMproxy::readReceivers(
   if (rcvs.empty())
     throw std::runtime_error("No receiver found in file: " + filename);
   return rcvs;
+}
+void SEMproxy::computePressureStatistics(int timeIndex)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+
+  if (nbNodes <= 0)
+    throw std::runtime_error("Cannot compute statistics on an empty field.");
+
+  const auto start = std::chrono::steady_clock::now();
+
+  auto pressure = pnGlobal;
+
+  float minPressure = 0.0f;
+  float maxPressure = 0.0f;
+  double sumPressure = 0.0;
+
+  Kokkos::parallel_reduce(
+      "PressureMin",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, float& localMin) {
+        const float value = pressure(n, timeIndex);
+        if (value < localMin)
+          localMin = value;
+      },
+      Kokkos::Min<float>(minPressure));
+
+  Kokkos::parallel_reduce(
+      "PressureMax",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, float& localMax) {
+        const float value = pressure(n, timeIndex);
+        if (value > localMax)
+          localMax = value;
+      },
+      Kokkos::Max<float>(maxPressure));
+
+  Kokkos::parallel_reduce(
+      "PressureSum",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, double& localSum) {
+        localSum += static_cast<double>(pressure(n, timeIndex));
+      },
+      sumPressure);
+
+  const double meanPressure = sumPressure / nbNodes;
+  double variancePressure = 0.0;
+
+  Kokkos::parallel_reduce(
+      "PressureVariance",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, double& localVariance) {
+        const double difference =
+            static_cast<double>(pressure(n, timeIndex)) - meanPressure;
+        localVariance += difference * difference;
+      },
+      variancePressure);
+
+  variancePressure /= nbNodes;
+
+  Kokkos::fence();
+
+  const double elapsedMs =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+
+  std::cout << "[In-situ Kokkos] pas=" << timeIndex
+            << " min=" << minPressure
+            << " max=" << maxPressure
+            << " moyenne=" << meanPressure
+            << " variance=" << variancePressure
+            << " temps_ms=" << elapsedMs << '\n';
+}
+// Statistiques in situ du champ de pression, version CPU, une seule passe.
+// column : colonne de pnGlobal a analyser (celle qui vient d'etre calculee)
+// step   : numero du pas de temps (pour l'affichage uniquement)
+void SEMproxy::computePressureStatisticsCPU(int column, int step)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+  if (nbNodes <= 0)
+    throw std::runtime_error("Cannot compute statistics on an empty field.");
+
+  const auto start = std::chrono::steady_clock::now();
+
+  double minP = pnGlobal(0, column);
+  double maxP = minP;
+  double mean = 0.0;  // moyenne courante
+  double m2 = 0.0;    // cumul des carres des ecarts a la moyenne courante
+
+  for (int n = 0; n < nbNodes; n++)
+  {
+    const double x = pnGlobal(n, column);
+    if (x < minP) minP = x;
+    if (x > maxP) maxP = x;
+    // Welford : mise a jour incrementale
+    const double delta = x - mean;
+    mean += delta / (n + 1);
+    m2 += delta * (x - mean);
+  }
+  const double variance = m2 / nbNodes;  // variance de population
+
+  const double elapsedMs =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+
+  std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
+            << " max=" << maxP << " moyenne=" << mean
+            << " variance=" << variance << " temps_ms=" << elapsedMs << '\n';
 }

@@ -113,6 +113,10 @@ class SEMproxy
   void init_source();
   // allocate arrays and vectors
   void init_arrays();
+  // Calcul des statistiques in situ du champ de pression
+  void computePressureStatistics(int timeIndex);
+    // statistiques in situ, version CPU (une seule passe, algorithme de Welford)
+  void computePressureStatisticsCPU(int column, int step);
   // private methods to pars argv options
   int getPhysic(string physicArg);
   SolverFactory::implemType getImplem(string implemArg);
