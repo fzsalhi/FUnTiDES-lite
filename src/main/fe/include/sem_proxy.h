@@ -78,6 +78,7 @@ class SEMproxy
   std::vector<std::array<float, 3>> rcv_coords_;
   // sismos : nom du fichier CSV de sortie
   std::string sismo_file_;
+  int stats_interval_ = 0;  // intervalle des statistiques in situ
   float domain_size_[3] = {0};
   // snapshots
   bool is_snapshots_;
@@ -114,7 +115,7 @@ class SEMproxy
   // allocate arrays and vectors
   void init_arrays();
   // Calcul des statistiques in situ du champ de pression
-  void computePressureStatistics(int timeIndex);
+  void computePressureStatistics(int column, int step);
     // statistiques in situ, version CPU (une seule passe, algorithme de Welford)
   void computePressureStatisticsCPU(int column, int step);
   // private methods to pars argv options

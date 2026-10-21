@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <limits>
 using namespace SourceAndReceiverUtils;
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
 {
@@ -49,6 +50,7 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   else
     rcv_coords_ = readReceivers(opt.rcv_file);
   sismo_file_ = opt.sismo_file;
+  stats_interval_ = opt.stats_interval;
   std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
   bool isModelOnNodes = opt.isModelOnNodes;
   isElastic_ = opt.isElastic;
@@ -187,8 +189,8 @@ void SEMproxy::run()
       saveSnapshot(indexTimeSample);
       totalSaveTime += system_clock::now() - startSaveTime;
     }
-     // statistiques in situ (provisoire : tous les 50 pas)
-    if (indexTimeSample % 50 == 0)
+    // statistiques in situ : apres computeOneStep, i1 contient le champ le plus recent
+    if (stats_interval_ > 0 && indexTimeSample % stats_interval_ == 0)
       computePressureStatisticsCPU(i1, indexTimeSample);
     swap(i1, i2);
     auto tmp = solverData.m_i1;
@@ -470,7 +472,7 @@ std::vector<std::array<float, 3>> SEMproxy::readReceivers(
     throw std::runtime_error("No receiver found in file: " + filename);
   return rcvs;
 }
-void SEMproxy::computePressureStatistics(int timeIndex)
+void SEMproxy::computePressureStatistics(int column, int step)
 {
   const int nbNodes = m_mesh->getNumberOfNodes();
 
@@ -481,15 +483,15 @@ void SEMproxy::computePressureStatistics(int timeIndex)
 
   auto pressure = pnGlobal;
 
-  float minPressure = 0.0f;
-  float maxPressure = 0.0f;
+  float minPressure = std::numeric_limits<float>::max();
+  float maxPressure = std::numeric_limits<float>::lowest();
   double sumPressure = 0.0;
 
   Kokkos::parallel_reduce(
       "PressureMin",
       nbNodes,
       KOKKOS_LAMBDA(const int n, float& localMin) {
-        const float value = pressure(n, timeIndex);
+        const float value = pressure(n, column);
         if (value < localMin)
           localMin = value;
       },
@@ -499,7 +501,7 @@ void SEMproxy::computePressureStatistics(int timeIndex)
       "PressureMax",
       nbNodes,
       KOKKOS_LAMBDA(const int n, float& localMax) {
-        const float value = pressure(n, timeIndex);
+        const float value = pressure(n, column);
         if (value > localMax)
           localMax = value;
       },
@@ -509,7 +511,7 @@ void SEMproxy::computePressureStatistics(int timeIndex)
       "PressureSum",
       nbNodes,
       KOKKOS_LAMBDA(const int n, double& localSum) {
-        localSum += static_cast<double>(pressure(n, timeIndex));
+        localSum += static_cast<double>(pressure(n, column));
       },
       sumPressure);
 
@@ -521,7 +523,7 @@ void SEMproxy::computePressureStatistics(int timeIndex)
       nbNodes,
       KOKKOS_LAMBDA(const int n, double& localVariance) {
         const double difference =
-            static_cast<double>(pressure(n, timeIndex)) - meanPressure;
+            static_cast<double>(pressure(n, column)) - meanPressure;
         localVariance += difference * difference;
       },
       variancePressure);
@@ -535,7 +537,7 @@ void SEMproxy::computePressureStatistics(int timeIndex)
           std::chrono::steady_clock::now() - start)
           .count();
 
-  std::cout << "[In-situ Kokkos] pas=" << timeIndex
+  std::cout << "[In-situ Kokkos] pas=" << step
             << " min=" << minPressure
             << " max=" << maxPressure
             << " moyenne=" << meanPressure
