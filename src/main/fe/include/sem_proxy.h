@@ -15,6 +15,7 @@
 #include <string>
 #include <variant>
 #include <vector>
+#include <fstream>
 #include "sem_proxy_options.h"
 /**
  * @class SEMproxy
@@ -81,6 +82,7 @@ class SEMproxy
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;
   int stats_count_ = 0;
+  std::ofstream stats_out_;
   float domain_size_[3] = {0};
   // snapshots
   bool is_snapshots_;

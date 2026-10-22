@@ -16,6 +16,7 @@ class SemProxyOptions
   float rcvx = 1410.f, rcvy = 1010.f, rcvz = 1010.f;
   //sismos: fichier d'entrée des récepteurs et CSV de sortie
   std::string rcv_file = "";
+  std::string stats_file = "";
   int stats_interval = 0;
   std::string sismo_file = "sismos.csv";
   std::string implem = "makutu";  // makutu|shiva
@@ -92,6 +93,8 @@ class SemProxyOptions
         cxxopts::value<std::string>(o.snap_folder))(
         "stats-interval",
         "Number of time steps between two in-situ statistics (0 = disabled)",
-        cxxopts::value<int>(o.stats_interval));
+        cxxopts::value<int>(o.stats_interval))(
+        "stats-file", "Output CSV file for the in-situ statistics",
+        cxxopts::value<std::string>(o.stats_file));
   }
 };

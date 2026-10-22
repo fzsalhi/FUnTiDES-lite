@@ -51,6 +51,15 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     rcv_coords_ = readReceivers(opt.rcv_file);
   sismo_file_ = opt.sismo_file;
   stats_interval_ = opt.stats_interval;
+    if (!opt.stats_file.empty())
+  {
+    stats_out_.open(opt.stats_file);
+    if (!stats_out_)
+      throw std::runtime_error("Cannot open stats file: " + opt.stats_file);
+    stats_out_ << std::setprecision(9);
+    stats_out_ << "step,min,max,mean,variance,time_ms\n";
+  }
+
   std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
   bool isModelOnNodes = opt.isModelOnNodes;
   isElastic_ = opt.isElastic;
@@ -582,6 +591,10 @@ void SEMproxy::computePressureStatisticsCPU(int column, int step)
           .count();
   stats_total_ms_ += elapsedMs;
   stats_count_++;
+
+  if (stats_out_.is_open())
+    stats_out_ << step << ',' << minP << ',' << maxP << ',' << mean << ','
+               << variance << ',' << elapsedMs << '\n';
 
   std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
             << " max=" << maxP << " moyenne=" << mean
