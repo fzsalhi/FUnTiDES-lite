@@ -207,7 +207,11 @@ void SEMproxy::run()
   cout << "\n---- Elapsed Kernel Time : " << kerneltime_ms / 1E6 << " seconds."
        << endl;
   cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
-       << endl;
+       << endl;    
+  if (stats_interval_ > 0)
+    cout << "---- Elapsed Stats Time : " << stats_total_ms_ / 1E3
+         << " seconds (" << stats_count_ << " calls)." << endl;
+    
   cout << "------------------------------------------------ " << endl;
   // Save all receiver seismograms to CSV
   if (!sismo_file_.empty())
@@ -576,6 +580,8 @@ void SEMproxy::computePressureStatisticsCPU(int column, int step)
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - start)
           .count();
+  stats_total_ms_ += elapsedMs;
+  stats_count_++;
 
   std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
             << " max=" << maxP << " moyenne=" << mean

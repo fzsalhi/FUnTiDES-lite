@@ -79,6 +79,8 @@ class SEMproxy
   // sismos : nom du fichier CSV de sortie
   std::string sismo_file_;
   int stats_interval_ = 0;  // intervalle des statistiques in situ
+  double stats_total_ms_ = 0.0;
+  int stats_count_ = 0;
   float domain_size_[3] = {0};
   // snapshots
   bool is_snapshots_;
