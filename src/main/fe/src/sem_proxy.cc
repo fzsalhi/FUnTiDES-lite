@@ -59,6 +59,10 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     stats_out_ << std::setprecision(9);
     stats_out_ << "step,min,max,mean,variance,time_ms\n";
   }
+ 
+  // one streaming accumulator per receiver (rcv_coords_ is already filled here)
+  if (stats_interval_ > 0)
+    sismo_stats_.assign(rcv_coords_.size(), StreamStats());
 
   std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
   bool isModelOnNodes = opt.isModelOnNodes;
@@ -189,10 +193,14 @@ void SEMproxy::run()
           }
         }
       }
-      // ligne r = sismo du recepteur r, colonne = pas de temps
+      // row r = seismogram of receiver r, column = time step
       pnAtReceiver(r, indexTimeSample) = varnp1;
+      // update at every time step: the statistics must cover the whole signal
+      if (stats_interval_ > 0) sismo_stats_[r].add(varnp1);
     }
-    if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)
+
+          
+      if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)         
     {
       startSaveTime = system_clock::now();
       saveSnapshot(indexTimeSample);
@@ -217,7 +225,14 @@ void SEMproxy::run()
        << endl;
   cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
        << endl;    
+    // final in-situ statistics of each seismogram
   if (stats_interval_ > 0)
+    for (size_t r = 0; r < sismo_stats_.size(); r++)
+      cout << "[In-situ sismo] rcv=" << r << " n=" << sismo_stats_[r].n
+           << " min=" << sismo_stats_[r].minVal
+           << " max=" << sismo_stats_[r].maxVal
+           << " moyenne=" << sismo_stats_[r].mean
+           << " variance=" << sismo_stats_[r].variance() << endl;
     cout << "---- Elapsed Stats Time : " << stats_total_ms_ / 1E3
          << " seconds (" << stats_count_ << " calls)." << endl;
     

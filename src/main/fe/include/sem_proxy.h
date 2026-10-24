@@ -16,7 +16,32 @@
 #include <variant>
 #include <vector>
 #include <fstream>
+#include <limits>
 #include "sem_proxy_options.h"
+
+/* Streaming statistics (Welford's algorithm): constant memory*/
+
+struct StreamStats
+{
+  long n = 0;
+  double mean = 0.0;
+  double m2 = 0.0;  // sum of squared deviations from the running mean
+  double minVal = std::numeric_limits<double>::max();
+  double maxVal = std::numeric_limits<double>::lowest();
+
+  void add(double x)
+  {
+    n++;
+    if (x < minVal) minVal = x;
+    if (x > maxVal) maxVal = x;
+    const double delta = x - mean;
+    mean += delta / n;
+    m2 += delta * (x - mean);
+  }
+  double variance() const { return n > 0 ? m2 / n : 0.0; }
+};
+
+
 /**
  * @class SEMproxy
  */
@@ -82,6 +107,7 @@ class SEMproxy
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;
   int stats_count_ = 0;
+    std::vector<StreamStats> sismo_stats_;  // one entry per receiver
   std::ofstream stats_out_;
   float domain_size_[3] = {0};
   // snapshots
