@@ -17,6 +17,8 @@ class SemProxyOptions
   //sismos: fichier d'entrée des récepteurs et CSV de sortie
   std::string rcv_file = "";
   std::string stats_file = "";
+  // In-situ statistics mode: cpu | gpu | hostcopy
+  std::string stats_mode = "cpu";
   int stats_interval = 0;
   std::string sismo_file = "sismos.csv";
   std::string implem = "makutu";  // makutu|shiva
@@ -95,6 +97,8 @@ class SemProxyOptions
         "Number of time steps between two in-situ statistics (0 = disabled)",
         cxxopts::value<int>(o.stats_interval))(
         "stats-file", "Output CSV file for the in-situ statistics",
-        cxxopts::value<std::string>(o.stats_file));
+        cxxopts::value<std::string>(o.stats_file))(   
+        "stats-mode", "In-situ stats mode: cpu|gpu|hostcopy (default cpu)",
+        cxxopts::value<std::string>(o.stats_mode));
   }
 };

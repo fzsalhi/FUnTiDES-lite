@@ -59,7 +59,10 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     stats_out_ << std::setprecision(9);
     stats_out_ << "step,min,max,mean,variance,time_ms\n";
   }
- 
+  
+  stats_mode_ = opt.stats_mode;
+  if (stats_mode_ != "cpu" && stats_mode_ != "gpu" && stats_mode_ != "hostcopy")
+    throw std::runtime_error("Unknown --stats-mode: " + stats_mode_);
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
   if (stats_interval_ > 0)
     sismo_stats_.assign(rcv_coords_.size(), StreamStats());
@@ -208,7 +211,15 @@ void SEMproxy::run()
     }
     // statistiques in situ : apres computeOneStep, i1 contient le champ le plus recent
     if (stats_interval_ > 0 && indexTimeSample % stats_interval_ == 0)
-      computePressureStatisticsCPU(i1, indexTimeSample);
+      {
+       if (stats_mode_ == "gpu")
+        computePressureStatistics(i1, indexTimeSample);
+      else if (stats_mode_ == "hostcopy")
+        computePressureStatisticsHostCopy(i1, indexTimeSample);
+      else
+        computePressureStatisticsCPU(i1, indexTimeSample);
+     }
+
     swap(i1, i2);
     auto tmp = solverData.m_i1;
     solverData.m_i1 = solverData.m_i2;
@@ -614,4 +625,56 @@ void SEMproxy::computePressureStatisticsCPU(int column, int step)
   std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
             << " max=" << maxP << " moyenne=" << mean
             << " variance=" << variance << " temps_ms=" << elapsedMs << '\n';
+}
+
+// In-situ statistics, host version: explicit GPU->host copy of one column,
+// then a single-pass CPU loop (Welford). Copy and compute are timed separately.
+// column : column of pnGlobal to analyse (the one just computed)
+// step   : time step number (display only)
+void SEMproxy::computePressureStatisticsHostCopy(int column, int step)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+  if (nbNodes <= 0)
+    throw std::runtime_error("Cannot compute statistics on an empty field.");
+
+  // Host buffer, allocated outside the timed region
+  Kokkos::View<float*, Layout, Kokkos::HostSpace> hostCol("hostCol", nbNodes);
+  // The column is contiguous because Layout is LayoutLeft with CUDA
+  auto col = Kokkos::subview(pnGlobal, Kokkos::ALL, column);
+
+  Kokkos::fence();  // make sure the solver kernels are done before timing
+  const auto t0 = std::chrono::steady_clock::now();
+  Kokkos::deep_copy(hostCol, col);  // the GPU -> host transfer
+  const auto t1 = std::chrono::steady_clock::now();
+
+  // Single-pass statistics on the host copy
+  double minP = hostCol(0);
+  double maxP = minP;
+  double mean = 0.0;  // running mean
+  double m2 = 0.0;    // sum of squared deviations from the running mean
+
+  for (int n = 0; n < nbNodes; n++)
+  {
+    const double x = hostCol(n);
+    if (x < minP) minP = x;
+    if (x > maxP) maxP = x;
+    // Welford: incremental update
+    const double delta = x - mean;
+    mean += delta / (n + 1);
+    m2 += delta * (x - mean);
+  }
+  const double variance = m2 / nbNodes;
+
+  const auto t2 = std::chrono::steady_clock::now();
+
+  const double copyMs =
+      std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double computeMs =
+      std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const std::size_t bytes = static_cast<std::size_t>(nbNodes) * sizeof(float);
+
+  std::cout << "[In-situ HostCopy] step=" << step << " min=" << minP
+            << " max=" << maxP << " mean=" << mean
+            << " variance=" << variance << " copy_ms=" << copyMs
+            << " compute_ms=" << computeMs << " bytes=" << bytes << '\n';
 }
