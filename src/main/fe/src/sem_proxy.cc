@@ -57,7 +57,7 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     if (!stats_out_)
       throw std::runtime_error("Cannot open stats file: " + opt.stats_file);
     stats_out_ << std::setprecision(9);
-    stats_out_ << "step,min,max,mean,variance,time_ms\n";
+    stats_out_ << "step,min,max,mean,variance,time_ms,mode,copy_ms,compute_ms,bytes\n";
   }
   
   stats_mode_ = opt.stats_mode;
@@ -517,6 +517,8 @@ void SEMproxy::computePressureStatistics(int column, int step)
 
   if (nbNodes <= 0)
     throw std::runtime_error("Cannot compute statistics on an empty field.");
+  
+  Kokkos::fence();
 
   const auto start = std::chrono::steady_clock::now();
 
@@ -576,6 +578,10 @@ void SEMproxy::computePressureStatistics(int column, int step)
           std::chrono::steady_clock::now() - start)
           .count();
 
+  recordStats(step, "gpu", minPressure, maxPressure, meanPressure,
+              variancePressure, 0.0, elapsedMs, elapsedMs,
+              2 * sizeof(float) + 2 * sizeof(double));
+
   std::cout << "[In-situ Kokkos] pas=" << step
             << " min=" << minPressure
             << " max=" << maxPressure
@@ -592,6 +598,7 @@ void SEMproxy::computePressureStatisticsCPU(int column, int step)
   if (nbNodes <= 0)
     throw std::runtime_error("Cannot compute statistics on an empty field.");
 
+  Kokkos::fence();  // make sure previous solver kernels are done before timing
   const auto start = std::chrono::steady_clock::now();
 
   double minP = pnGlobal(0, column);
@@ -615,12 +622,8 @@ void SEMproxy::computePressureStatisticsCPU(int column, int step)
       std::chrono::duration<double, std::milli>(
           std::chrono::steady_clock::now() - start)
           .count();
-  stats_total_ms_ += elapsedMs;
-  stats_count_++;
-
-  if (stats_out_.is_open())
-    stats_out_ << step << ',' << minP << ',' << maxP << ',' << mean << ','
-               << variance << ',' << elapsedMs << '\n';
+  recordStats(step, "cpu", minP, maxP, mean, variance, 0.0, elapsedMs,
+              elapsedMs, 0);
 
   std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
             << " max=" << maxP << " moyenne=" << mean
@@ -672,9 +675,26 @@ void SEMproxy::computePressureStatisticsHostCopy(int column, int step)
   const double computeMs =
       std::chrono::duration<double, std::milli>(t2 - t1).count();
   const std::size_t bytes = static_cast<std::size_t>(nbNodes) * sizeof(float);
-
+  
+  recordStats(step, "hostcopy", minP, maxP, mean, variance, copyMs,
+              computeMs, copyMs + computeMs, bytes);
+  
   std::cout << "[In-situ HostCopy] step=" << step << " min=" << minP
             << " max=" << maxP << " mean=" << mean
             << " variance=" << variance << " copy_ms=" << copyMs
             << " compute_ms=" << computeMs << " bytes=" << bytes << '\n';
+}
+
+void SEMproxy::recordStats(int step, const char* mode, double minP,
+                           double maxP, double mean, double variance,
+                           double copyMs, double computeMs, double totalMs,
+                           std::size_t bytes)
+{
+  stats_total_ms_ += totalMs;
+  stats_count_++;
+
+  if (stats_out_.is_open())
+    stats_out_ << step << ',' << minP << ',' << maxP << ',' << mean << ','
+               << variance << ',' << totalMs << ',' << mode << ',' << copyMs
+               << ',' << computeMs << ',' << bytes << '\n';
 }

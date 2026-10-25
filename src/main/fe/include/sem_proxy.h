@@ -154,6 +154,10 @@ class SEMproxy
    // In-situ statistics, host version: explicit GPU->host copy of one column,
   // then a single-pass CPU loop. Copy and compute are timed separately.
   void computePressureStatisticsHostCopy(int column, int step);
+  // Accumulate the in-situ stats time and write one CSV row (all modes)
+  void recordStats(int step, const char* mode, double minP, double maxP,
+                   double mean, double variance, double copyMs,
+                   double computeMs, double totalMs, std::size_t bytes);
   // private methods to pars argv options
   int getPhysic(string physicArg);
   SolverFactory::implemType getImplem(string implemArg);
