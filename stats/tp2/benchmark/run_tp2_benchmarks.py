@@ -9,12 +9,49 @@ import sys
 import time
 from pathlib import Path
 
-import numpy as np
-
 
 def parse_number(pattern, text):
     m = re.search(pattern, text)
     return float(m.group(1)) if m else 0.0
+
+
+def file_bytes(path):
+    p = Path(path)
+    if p.is_file():
+        return p.stat().st_size
+    if p.is_dir():
+        return sum(x.stat().st_size for x in p.rglob("*") if x.is_file())
+    return 0
+
+
+def read_one_row(path):
+    p = Path(path)
+    if not p.exists():
+        return {}
+    with p.open(newline="") as f:
+        return next(csv.DictReader(f), {})
+
+
+def sum_stats(path):
+    p = Path(path)
+    if not p.exists():
+        return 0, 0.0, 0.0, 0.0, 0
+
+    n = 0
+    copy_ms = 0.0
+    compute_ms = 0.0
+    total_ms = 0.0
+    bytes_count = 0
+
+    with p.open(newline="") as f:
+        for row in csv.DictReader(f):
+            n += 1
+            copy_ms += float(row.get("copy_ms", 0) or 0)
+            compute_ms += float(row.get("compute_ms", 0) or 0)
+            total_ms += float(row.get("time_ms", 0) or 0)
+            bytes_count += int(float(row.get("bytes", 0) or 0))
+
+    return n, copy_ms, compute_ms, total_ms, bytes_count
 
 
 def common_command(exe, c):
@@ -37,6 +74,7 @@ def common_command(exe, c):
 
 def run_command(cmd, cwd, env, log_path):
     t0 = time.perf_counter()
+
     p = subprocess.run(
         cmd,
         cwd=cwd,
@@ -45,29 +83,23 @@ def run_command(cmd, cwd, env, log_path):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT
     )
+
     t1 = time.perf_counter()
+
     Path(log_path).write_text(p.stdout)
+
     if p.returncode != 0:
         raise RuntimeError(
             "Command failed: " + " ".join(cmd) + "\n" + p.stdout[-4000:]
         )
+
     return p.stdout, t1 - t0
-
-
-def read_one_row(path):
-    if not Path(path).exists():
-        return {}
-    with open(path, newline="") as f:
-        return next(csv.DictReader(f), {})
 
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--config", required=True)
-    p.add_argument("--size", default="M")
-    p.add_argument("--threads", default="1,2,4,8")
-    p.add_argument("--repetitions", type=int, default=3)
-    p.add_argument("--out")
+    p.add_argument("--config", default="tp2_benchmark_config.json")
+    p.add_argument("--mode", choices=["all", "quick"], default="all")
     a = p.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -75,32 +107,50 @@ def main():
     with open(a.config) as f:
         cfg = json.load(f)
 
-    size_cfg = next(
-        (x for x in cfg["sizes"] if x["name"] == a.size),
-        None
-    )
-
-    if size_cfg is None:
-        raise RuntimeError("Unknown size.")
-
-    c = dict(cfg["common"])
-    c.update(size_cfg)
-
-    exe = str(Path(cfg["semproxy"]).resolve())
-    out_root = Path(cfg["output_dir"]).resolve() / "threads"
+    out_root = Path(cfg["output_dir"]).resolve()
     out_root.mkdir(parents=True, exist_ok=True)
 
-    out_csv = (
-        Path(a.out).resolve()
-        if a.out
-        else out_root / "tp2_bench_threads.csv"
-    )
+    master = out_root / "tp2_bench_raw.csv"
+    exe = str(Path(cfg["semproxy"]).resolve())
 
-    thread_values = [
-        int(x)
-        for x in a.threads.split(",")
-        if x.strip()
+    env = os.environ.copy()
+    env["OMP_NUM_THREADS"] = str(cfg["omp_threads"])
+
+    fields = [
+        "size",
+        "mode",
+        "rep",
+        "ex",
+        "ey",
+        "ez",
+        "nodes_est",
+        "wall_s",
+        "totalexe_s",
+        "kernel_s",
+        "output_s",
+        "save_s",
+        "stats_s",
+        "bytes_written",
+        "n_snapshots",
+        "n_stats_calls",
+        "adhoc_read_s",
+        "adhoc_compute_s",
+        "adhoc_total_s",
+        "stats_copy_ms",
+        "stats_compute_ms",
+        "stats_total_ms",
+        "stats_bytes",
+        "cufft_bytes_h2d",
+        "cufft_bytes_d2h",
+        "cufft_h2d_ms",
+        "cufft_fft_ms",
+        "cufft_d2h_ms",
+        "cufft_total_ms",
+        "cufft_h2d_gbs",
+        "cufft_d2h_gbs"
     ]
+
+    all_rows = []
 
     modes = [
         "baseline",
@@ -110,26 +160,34 @@ def main():
         "sismo_insitu_cufft"
     ]
 
-    raw = []
-
-    for threads in thread_values:
-        for mode in modes:
-            for rep in range(1, a.repetitions + 1):
-                run_dir = (
-                    out_root
-                    / a.size
-                    / mode
-                    / f"t{threads}"
-                    / f"rep_{rep:02d}"
+    for size_cfg in cfg["sizes"]:
+        for key in ("ex", "ey", "ez"):
+            if size_cfg.get(key) is None:
+                raise RuntimeError(
+                    "Fill S/M/L dimensions in tp2_benchmark_config.json."
                 )
+
+        size = size_cfg["name"]
+
+        c = dict(cfg["common"])
+        c.update(size_cfg)
+
+        nodes_est = (
+            (c["ex"] * c["order"] + 1)
+            * (c["ey"] * c["order"] + 1)
+            * (c["ez"] * c["order"] + 1)
+        )
+
+        reps = 1 if a.mode == "quick" else cfg["repetitions"]
+
+        for mode in modes:
+            for rep in range(1, reps + 1):
+                run_dir = out_root / size / mode / f"rep_{rep:02d}"
 
                 if run_dir.exists():
                     shutil.rmtree(run_dir)
 
                 run_dir.mkdir(parents=True)
-
-                env = os.environ.copy()
-                env["OMP_NUM_THREADS"] = str(threads)
 
                 cmd = common_command(exe, c)
 
@@ -139,10 +197,10 @@ def main():
                         str(Path(cfg["receivers_file"]).resolve())
                     ]
 
-                snap_dir = run_dir / "snapshots"
                 stats_file = run_dir / "stats.csv"
                 sismo_file = run_dir / "sismos.csv"
                 fft_file = run_dir / "fft.csv"
+                snap_dir = run_dir / "snapshots"
 
                 if mode == "snapshot_adhoc":
                     cmd += [
@@ -182,7 +240,35 @@ def main():
                     run_dir / "semproxy.log"
                 )
 
-                adhoc_s = 0.0
+                totalexe_s = parse_number(
+                    r"Elapsed TotalExe Time\s*:\s*([0-9.eE+-]+)",
+                    stdout
+                )
+
+                kernel_s = parse_number(
+                    r"Elapsed Kernel Time\s*:\s*([0-9.eE+-]+)",
+                    stdout
+                )
+
+                output_s = parse_number(
+                    r"Elapsed Output Time\s*:\s*([0-9.eE+-]+)",
+                    stdout
+                )
+
+                save_s = parse_number(
+                    r"Elapsed Save Time\s*:\s*([0-9.eE+-]+)",
+                    stdout
+                )
+
+                stats_s = parse_number(
+                    r"Elapsed Stats Time\s*:\s*([0-9.eE+-]+)",
+                    stdout
+                )
+
+                adhoc_read_s = 0.0
+                adhoc_compute_s = 0.0
+                adhoc_total_s = 0.0
+                n_snapshots = 0
 
                 if mode == "snapshot_adhoc":
                     adhoc_out = run_dir / "adhoc_snapshots.csv"
@@ -194,7 +280,7 @@ def main():
                             "--snap-dir",
                             str(snap_dir),
                             "--size",
-                            a.size,
+                            size,
                             "--out",
                             str(adhoc_out),
                             "--bins",
@@ -206,9 +292,13 @@ def main():
                     )
 
                     d = read_one_row(adhoc_out)
-                    adhoc_s = float(d.get("total_s", 0) or 0)
 
-                elif mode == "sismo_adhoc":
+                    adhoc_read_s = float(d.get("read_s", 0) or 0)
+                    adhoc_compute_s = float(d.get("compute_s", 0) or 0)
+                    adhoc_total_s = float(d.get("total_s", 0) or 0)
+                    n_snapshots = int(float(d.get("n_snapshots", 0) or 0))
+
+                if mode == "sismo_adhoc":
                     adhoc_out = run_dir / "adhoc_sismos.csv"
 
                     run_command(
@@ -218,7 +308,7 @@ def main():
                             "--sismos",
                             str(sismo_file),
                             "--size",
-                            a.size,
+                            size,
                             "--out",
                             str(adhoc_out)
                         ],
@@ -228,113 +318,119 @@ def main():
                     )
 
                     d = read_one_row(adhoc_out)
-                    adhoc_s = float(d.get("total_s", 0) or 0)
 
-                raw.append({
-                    "size": a.size,
+                    adhoc_read_s = float(d.get("read_s", 0) or 0)
+                    adhoc_compute_s = float(d.get("compute_s", 0) or 0)
+                    adhoc_total_s = float(d.get("total_s", 0) or 0)
+
+                (
+                    n_stats_calls,
+                    stats_copy_ms,
+                    stats_compute_ms,
+                    stats_total_ms,
+                    stats_bytes
+                ) = sum_stats(stats_file)
+
+                timing_file = Path(str(fft_file) + ".timings.csv")
+                cufft = read_one_row(timing_file)
+
+                cufft_bytes_h2d = int(
+                    float(cufft.get("bytes_h2d", 0) or 0)
+                )
+
+                cufft_bytes_d2h = int(
+                    float(cufft.get("bytes_d2h", 0) or 0)
+                )
+
+                cufft_h2d_ms = float(
+                    cufft.get("h2d_ms", 0) or 0
+                )
+
+                cufft_fft_ms = float(
+                    cufft.get("fft_ms", 0) or 0
+                )
+
+                cufft_d2h_ms = float(
+                    cufft.get("d2h_ms", 0) or 0
+                )
+
+                cufft_total_ms = float(
+                    cufft.get("total_ms", 0) or 0
+                )
+
+                cufft_h2d_gbs = (
+                    cufft_bytes_h2d / (cufft_h2d_ms * 1e6)
+                    if cufft_h2d_ms > 0
+                    else 0.0
+                )
+
+                cufft_d2h_gbs = (
+                    cufft_bytes_d2h / (cufft_d2h_ms * 1e6)
+                    if cufft_d2h_ms > 0
+                    else 0.0
+                )
+
+                bytes_written = 0
+
+                if mode == "snapshot_adhoc":
+                    bytes_written = file_bytes(snap_dir)
+
+                elif mode == "snapshot_insitu_cpu":
+                    bytes_written = file_bytes(stats_file)
+
+                elif mode == "sismo_adhoc":
+                    bytes_written = file_bytes(sismo_file)
+
+                elif mode == "sismo_insitu_cufft":
+                    bytes_written = (
+                        file_bytes(fft_file)
+                        + file_bytes(timing_file)
+                    )
+
+                row = {
+                    "size": size,
                     "mode": mode,
-                    "threads": threads,
                     "rep": rep,
+                    "ex": c["ex"],
+                    "ey": c["ey"],
+                    "ez": c["ez"],
+                    "nodes_est": nodes_est,
                     "wall_s": wall_s,
-                    "totalexe_s": parse_number(
-                        r"Elapsed TotalExe Time\s*:\s*([0-9.eE+-]+)",
-                        stdout
-                    ),
-                    "kernel_s": parse_number(
-                        r"Elapsed Kernel Time\s*:\s*([0-9.eE+-]+)",
-                        stdout
-                    ),
-                    "save_s": parse_number(
-                        r"Elapsed Save Time\s*:\s*([0-9.eE+-]+)",
-                        stdout
-                    ),
-                    "stats_s": parse_number(
-                        r"Elapsed Stats Time\s*:\s*([0-9.eE+-]+)",
-                        stdout
-                    ),
-                    "adhoc_s": adhoc_s,
-                    "workflow_s": wall_s + adhoc_s
-                })
+                    "totalexe_s": totalexe_s,
+                    "kernel_s": kernel_s,
+                    "output_s": output_s,
+                    "save_s": save_s,
+                    "stats_s": stats_s,
+                    "bytes_written": bytes_written,
+                    "n_snapshots": n_snapshots,
+                    "n_stats_calls": n_stats_calls,
+                    "adhoc_read_s": adhoc_read_s,
+                    "adhoc_compute_s": adhoc_compute_s,
+                    "adhoc_total_s": adhoc_total_s,
+                    "stats_copy_ms": stats_copy_ms,
+                    "stats_compute_ms": stats_compute_ms,
+                    "stats_total_ms": stats_total_ms,
+                    "stats_bytes": stats_bytes,
+                    "cufft_bytes_h2d": cufft_bytes_h2d,
+                    "cufft_bytes_d2h": cufft_bytes_d2h,
+                    "cufft_h2d_ms": cufft_h2d_ms,
+                    "cufft_fft_ms": cufft_fft_ms,
+                    "cufft_d2h_ms": cufft_d2h_ms,
+                    "cufft_total_ms": cufft_total_ms,
+                    "cufft_h2d_gbs": cufft_h2d_gbs,
+                    "cufft_d2h_gbs": cufft_d2h_gbs
+                }
 
-                print(a.size, mode, threads, rep)
+                all_rows.append(row)
 
-    raw_path = out_csv.with_name(
-        out_csv.stem + "_raw.csv"
-    )
+                with master.open("w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields)
+                    w.writeheader()
+                    w.writerows(all_rows)
 
-    with open(raw_path, "w", newline="") as f:
-        w = csv.DictWriter(
-            f,
-            fieldnames=list(raw[0].keys())
-        )
-        w.writeheader()
-        w.writerows(raw)
+                print(size, mode, rep)
 
-    summary = []
-
-    for mode in modes:
-        mode_rows = []
-
-        for threads in thread_values:
-            items = [
-                r for r in raw
-                if r["mode"] == mode
-                and r["threads"] == threads
-            ]
-
-            workflows = np.array(
-                [r["workflow_s"] for r in items],
-                dtype=float
-            )
-
-            walls = np.array(
-                [r["wall_s"] for r in items],
-                dtype=float
-            )
-
-            adhoc = np.array(
-                [r["adhoc_s"] for r in items],
-                dtype=float
-            )
-
-            mode_rows.append({
-                "size": a.size,
-                "mode": mode,
-                "threads": threads,
-                "repetitions": len(items),
-                "simulation_s_mean": float(np.mean(walls)),
-                "simulation_s_std": float(np.std(walls)),
-                "adhoc_s_mean": float(np.mean(adhoc)),
-                "adhoc_s_std": float(np.std(adhoc)),
-                "workflow_s_mean": float(np.mean(workflows)),
-                "workflow_s_std": float(np.std(workflows))
-            })
-
-        t1 = next(
-            x["workflow_s_mean"]
-            for x in mode_rows
-            if x["threads"] == 1
-        )
-
-        for row in mode_rows:
-            speedup = t1 / row["workflow_s_mean"]
-            row["speedup"] = speedup
-            row["efficiency_pct"] = (
-                100.0 * speedup / row["threads"]
-            )
-
-        summary.extend(mode_rows)
-
-    with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(
-            f,
-            fieldnames=list(summary[0].keys())
-        )
-        w.writeheader()
-        w.writerows(summary)
-
-    print(raw_path)
-    print(out_csv)
+    print(master)
 
 
 if __name__ == "__main__":
