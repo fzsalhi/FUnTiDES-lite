@@ -405,7 +405,7 @@ def plot_scalability(scale, folder):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--summary", required=True)
+    p.add_argument("--summary")
     p.add_argument("--threads")
     p.add_argument("--precision")
     p.add_argument("--slices")
@@ -419,12 +419,19 @@ def main():
     slices = load_csv(a.slices)
     scale = load_csv(a.scalability)
 
-    plot_workflow(rows, a.out_dir)
-    plot_threads(thread_rows, a.out_dir)
-    plot_storage(rows, slices, a.out_dir)
-    plot_precision(precision, a.out_dir)
-    plot_cudamemcpy(rows, a.out_dir)
-    plot_scalability(scale, a.out_dir)
+    if rows:
+        plot_workflow(rows, a.out_dir)
+        plot_storage(rows, slices, a.out_dir)
+        plot_cudamemcpy(rows, a.out_dir)
+
+    if thread_rows:
+        plot_threads(thread_rows, a.out_dir)
+
+    if precision:
+        plot_precision(precision, a.out_dir)
+
+    if scale:
+        plot_scalability(scale, a.out_dir)
 
 
 if __name__ == "__main__":
