@@ -1,0 +1,39 @@
+{
+  "semproxy": "./build-cufft-k40/bin/semproxy",
+  "output_dir": "./stats/tp2/benchmark/results_tp2_bench",
+  "receivers_file": "",
+  "repetitions": 3,
+  "omp_threads": 4,
+  "snapshot_interval": 50,
+  "hist_bins": 100,
+  "common": {
+    "order": 3,
+    "lx": 2000,
+    "ly": 2000,
+    "lz": 2000,
+    "implem": "makutu",
+    "mesh": "cartesian",
+    "method": "sem",
+    "timemax": 1.0
+  },
+  "sizes": [
+    {
+      "name": "S",
+      "ex": 20,
+      "ey": 20,
+      "ez": 20
+    },
+    {
+      "name": "M",
+      "ex": 40,
+      "ey": 40,
+      "ez": 40
+    },
+    {
+      "name": "L",
+      "ex": 50,
+      "ey": 50,
+      "ez": 50
+    }
+  ]
+}
