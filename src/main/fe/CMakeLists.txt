@@ -22,8 +22,8 @@ if(COMPILE_SEM)
 
     target_link_libraries(semproxy
       PRIVATE
-        CUDA::cufft
-        CUDA::cudart
+        CUDA::cufft_static
+        CUDA::cudart_static
     )
   endif()
 
