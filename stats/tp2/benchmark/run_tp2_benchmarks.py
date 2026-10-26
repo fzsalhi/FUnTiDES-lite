@@ -100,6 +100,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--config", default="tp2_benchmark_config.json")
     p.add_argument("--mode", choices=["all", "quick"], default="all")
+    p.add_argument("--resume", action="store_true")
     a = p.parse_args()
 
     script_dir = Path(__file__).resolve().parent
@@ -151,6 +152,15 @@ def main():
     ]
 
     all_rows = []
+    completed = set()
+
+    if a.resume and master.exists():
+        with master.open(newline="") as f:
+            all_rows = list(csv.DictReader(f))
+        completed = {
+            (row["size"], row["mode"], int(row["rep"]))
+            for row in all_rows
+        }
 
     modes = [
         "baseline",
@@ -182,6 +192,10 @@ def main():
 
         for mode in modes:
             for rep in range(1, reps + 1):
+                if (size, mode, rep) in completed:
+                    print("SKIP", size, mode, rep)
+                    continue
+
                 run_dir = out_root / size / mode / f"rep_{rep:02d}"
 
                 if run_dir.exists():
