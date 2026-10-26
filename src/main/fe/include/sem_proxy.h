@@ -108,6 +108,7 @@ class SEMproxy
   std::vector<std::array<float, 3>> rcv_coords_;
   // sismos : nom du fichier CSV de sortie
   std::string sismo_file_;
+  std::string fft_file_;
   std::string stats_mode_;
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;

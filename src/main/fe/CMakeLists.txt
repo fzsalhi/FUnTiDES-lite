@@ -2,10 +2,36 @@ if(COMPILE_SEM)
 
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
+  option(SEMPROXY_ENABLE_CUFFT "Enable in-situ sismo FFT with cuFFT" OFF)
   add_executable(semproxy
     src/main.cc
     src/sem_proxy.cc
   )
+  if(SEMPROXY_ENABLE_CUFFT)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+
+    target_sources(semproxy
+      PRIVATE
+        src/sismo_fft_cuda.cu
+    )
+
+    target_compile_definitions(semproxy
+      PRIVATE
+        SEMPROXY_ENABLE_CUFFT
+    )
+
+    target_link_libraries(semproxy
+      PRIVATE
+        CUDA::cufft
+        CUDA::cudart
+    )
+
+    set_target_properties(semproxy PROPERTIES
+      CUDA_STANDARD 17
+      CUDA_STANDARD_REQUIRED ON
+    )
+  endif()
 
   target_include_directories(semproxy
     PRIVATE

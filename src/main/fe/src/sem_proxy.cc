@@ -21,6 +21,16 @@
 #include <fstream>
 #include <vector>
 #include <limits>
+
+
+#ifdef SEMPROXY_ENABLE_CUFFT
+void computeSismoFFTcuFFT(const std::vector<float>& signals,
+                          int nReceivers,
+                          int nSamples,
+                          float dt,
+                          const std::string& fftFile);
+#endif
+
 using namespace SourceAndReceiverUtils;
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
 {
@@ -50,6 +60,7 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   else
     rcv_coords_ = readReceivers(opt.rcv_file);
   sismo_file_ = opt.sismo_file;
+  fft_file_ = opt.fft_file;
   stats_interval_ = opt.stats_interval;
     if (!opt.stats_file.empty())
   {
@@ -226,6 +237,34 @@ void SEMproxy::run()
     solverData.m_i2 = tmp;
     totalOutputTime += system_clock::now() - startOutputTime;
   }
+  #ifdef SEMPROXY_ENABLE_CUFFT
+  if (!fft_file_.empty())
+  {
+    const int nReceivers =
+        static_cast<int>(rcv_coords_.size());
+
+    std::vector<float> signals(
+        static_cast<std::size_t>(nReceivers) *
+        static_cast<std::size_t>(num_sample_));
+
+    for (int r = 0; r < nReceivers; ++r)
+    {
+      for (int t = 0; t < num_sample_; ++t)
+      {
+        signals[
+            static_cast<std::size_t>(r) * num_sample_ + t] =
+            pnAtReceiver(r, t);
+      }
+    }
+
+    computeSismoFFTcuFFT(
+        signals,
+        nReceivers,
+        num_sample_,
+        dt_,
+        fft_file_);
+  }
+  #endif
   float kerneltime_ms = time_point_cast<microseconds>(totalComputeTime)
                             .time_since_epoch()
                             .count();
