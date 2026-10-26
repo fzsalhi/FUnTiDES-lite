@@ -8,12 +8,11 @@ if(COMPILE_SEM)
     src/sem_proxy.cc
   )
   if(SEMPROXY_ENABLE_CUFFT)
-    enable_language(CUDA)
     find_package(CUDAToolkit REQUIRED)
 
     target_sources(semproxy
       PRIVATE
-        src/sismo_fft_cuda.cu
+        src/sismo_fft_cuda.cc
     )
 
     target_compile_definitions(semproxy
@@ -25,11 +24,6 @@ if(COMPILE_SEM)
       PRIVATE
         CUDA::cufft
         CUDA::cudart
-    )
-
-    set_target_properties(semproxy PROPERTIES
-      CUDA_STANDARD 17
-      CUDA_STANDARD_REQUIRED ON
     )
   endif()
 
