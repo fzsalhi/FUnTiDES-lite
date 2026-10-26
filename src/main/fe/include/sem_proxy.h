@@ -15,7 +15,33 @@
 #include <string>
 #include <variant>
 #include <vector>
+#include <fstream>
+#include <limits>
 #include "sem_proxy_options.h"
+
+/* Streaming statistics (Welford's algorithm): constant memory*/
+
+struct StreamStats
+{
+  long n = 0;
+  double mean = 0.0;
+  double m2 = 0.0;  // sum of squared deviations from the running mean
+  double minVal = std::numeric_limits<double>::max();
+  double maxVal = std::numeric_limits<double>::lowest();
+
+  void add(double x)
+  {
+    n++;
+    if (x < minVal) minVal = x;
+    if (x > maxVal) maxVal = x;
+    const double delta = x - mean;
+    mean += delta / n;
+    m2 += delta * (x - mean);
+  }
+  double variance() const { return n > 0 ? m2 / n : 0.0; }
+};
+
+
 /**
  * @class SEMproxy
  */
@@ -65,6 +91,10 @@ class SEMproxy
    */
   float find_cfl_dt(float cfl_factor);
   void saveSnapshot(int timestep);
+  // In-situ statistics of one pressure column computed on the device with
+  // Kokkos::parallel_reduce. It must be public: nvcc forbids extended
+  // lambdas (KOKKOS_LAMBDA) inside private/protected member functions.
+  void computePressureStatistics(int column, int step);
  private:
   int i1 = 0;
   int i2 = 1;
@@ -78,6 +108,12 @@ class SEMproxy
   std::vector<std::array<float, 3>> rcv_coords_;
   // sismos : nom du fichier CSV de sortie
   std::string sismo_file_;
+  std::string stats_mode_;
+  int stats_interval_ = 0;  // intervalle des statistiques in situ
+  double stats_total_ms_ = 0.0;
+  int stats_count_ = 0;
+  std::vector<StreamStats> sismo_stats_;  // one entry per receiver
+  std::ofstream stats_out_;
   float domain_size_[3] = {0};
   // snapshots
   bool is_snapshots_;
@@ -113,6 +149,15 @@ class SEMproxy
   void init_source();
   // allocate arrays and vectors
   void init_arrays();
+    // statistiques in situ, version CPU (une seule passe, algorithme de Welford)
+  void computePressureStatisticsCPU(int column, int step);
+   // In-situ statistics, host version: explicit GPU->host copy of one column,
+  // then a single-pass CPU loop. Copy and compute are timed separately.
+  void computePressureStatisticsHostCopy(int column, int step);
+  // Accumulate the in-situ stats time and write one CSV row (all modes)
+  void recordStats(int step, const char* mode, double minP, double maxP,
+                   double mean, double variance, double copyMs,
+                   double computeMs, double totalMs, std::size_t bytes);
   // private methods to pars argv options
   int getPhysic(string physicArg);
   SolverFactory::implemType getImplem(string implemArg);

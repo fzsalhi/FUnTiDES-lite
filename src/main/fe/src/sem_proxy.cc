@@ -1,3 +1,5 @@
+#include <Kokkos_Core.hpp>
+#include <chrono>
 //************************************************************************
 //   proxy application v.0.0.1
 //
@@ -18,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <vector>
+#include <limits>
 using namespace SourceAndReceiverUtils;
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
 {
@@ -47,6 +50,23 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   else
     rcv_coords_ = readReceivers(opt.rcv_file);
   sismo_file_ = opt.sismo_file;
+  stats_interval_ = opt.stats_interval;
+    if (!opt.stats_file.empty())
+  {
+    stats_out_.open(opt.stats_file);
+    if (!stats_out_)
+      throw std::runtime_error("Cannot open stats file: " + opt.stats_file);
+    stats_out_ << std::setprecision(9);
+    stats_out_ << "step,min,max,mean,variance,time_ms,mode,copy_ms,compute_ms,bytes\n";
+  }
+  
+  stats_mode_ = opt.stats_mode;
+  if (stats_mode_ != "cpu" && stats_mode_ != "gpu" && stats_mode_ != "hostcopy")
+    throw std::runtime_error("Unknown --stats-mode: " + stats_mode_);
+  // one streaming accumulator per receiver (rcv_coords_ is already filled here)
+  if (stats_interval_ > 0)
+    sismo_stats_.assign(rcv_coords_.size(), StreamStats());
+
   std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
   bool isModelOnNodes = opt.isModelOnNodes;
   isElastic_ = opt.isElastic;
@@ -176,15 +196,30 @@ void SEMproxy::run()
           }
         }
       }
-      // ligne r = sismo du recepteur r, colonne = pas de temps
+      // row r = seismogram of receiver r, column = time step
       pnAtReceiver(r, indexTimeSample) = varnp1;
+      // update at every time step: the statistics must cover the whole signal
+      if (stats_interval_ > 0) sismo_stats_[r].add(varnp1);
     }
-    if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)
+
+          
+      if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)         
     {
       startSaveTime = system_clock::now();
       saveSnapshot(indexTimeSample);
       totalSaveTime += system_clock::now() - startSaveTime;
     }
+    // statistiques in situ : apres computeOneStep, i1 contient le champ le plus recent
+    if (stats_interval_ > 0 && indexTimeSample % stats_interval_ == 0)
+      {
+       if (stats_mode_ == "gpu")
+        computePressureStatistics(i1, indexTimeSample);
+      else if (stats_mode_ == "hostcopy")
+        computePressureStatisticsHostCopy(i1, indexTimeSample);
+      else
+        computePressureStatisticsCPU(i1, indexTimeSample);
+     }
+
     swap(i1, i2);
     auto tmp = solverData.m_i1;
     solverData.m_i1 = solverData.m_i2;
@@ -200,7 +235,18 @@ void SEMproxy::run()
   cout << "\n---- Elapsed Kernel Time : " << kerneltime_ms / 1E6 << " seconds."
        << endl;
   cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
-       << endl;
+       << endl;    
+    // final in-situ statistics of each seismogram
+  if (stats_interval_ > 0)
+    for (size_t r = 0; r < sismo_stats_.size(); r++)
+      cout << "[In-situ sismo] rcv=" << r << " n=" << sismo_stats_[r].n
+           << " min=" << sismo_stats_[r].minVal
+           << " max=" << sismo_stats_[r].maxVal
+           << " moyenne=" << sismo_stats_[r].mean
+           << " variance=" << sismo_stats_[r].variance() << endl;
+    cout << "---- Elapsed Stats Time : " << stats_total_ms_ / 1E3
+         << " seconds (" << stats_count_ << " calls)." << endl;
+    
   cout << "------------------------------------------------ " << endl;
   // Save all receiver seismograms to CSV
   if (!sismo_file_.empty())
@@ -464,4 +510,191 @@ std::vector<std::array<float, 3>> SEMproxy::readReceivers(
   if (rcvs.empty())
     throw std::runtime_error("No receiver found in file: " + filename);
   return rcvs;
+}
+void SEMproxy::computePressureStatistics(int column, int step)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+
+  if (nbNodes <= 0)
+    throw std::runtime_error("Cannot compute statistics on an empty field.");
+  
+  Kokkos::fence();
+
+  const auto start = std::chrono::steady_clock::now();
+
+  auto pressure = pnGlobal;
+
+  float minPressure = std::numeric_limits<float>::max();
+  float maxPressure = std::numeric_limits<float>::lowest();
+  double sumPressure = 0.0;
+
+  Kokkos::parallel_reduce(
+      "PressureMin",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, float& localMin) {
+        const float value = pressure(n, column);
+        if (value < localMin)
+          localMin = value;
+      },
+      Kokkos::Min<float>(minPressure));
+
+  Kokkos::parallel_reduce(
+      "PressureMax",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, float& localMax) {
+        const float value = pressure(n, column);
+        if (value > localMax)
+          localMax = value;
+      },
+      Kokkos::Max<float>(maxPressure));
+
+  Kokkos::parallel_reduce(
+      "PressureSum",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, double& localSum) {
+        localSum += static_cast<double>(pressure(n, column));
+      },
+      sumPressure);
+
+  const double meanPressure = sumPressure / nbNodes;
+  double variancePressure = 0.0;
+
+  Kokkos::parallel_reduce(
+      "PressureVariance",
+      nbNodes,
+      KOKKOS_LAMBDA(const int n, double& localVariance) {
+        const double difference =
+            static_cast<double>(pressure(n, column)) - meanPressure;
+        localVariance += difference * difference;
+      },
+      variancePressure);
+
+  variancePressure /= nbNodes;
+
+  Kokkos::fence();
+
+  const double elapsedMs =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+
+  recordStats(step, "gpu", minPressure, maxPressure, meanPressure,
+              variancePressure, 0.0, elapsedMs, elapsedMs,
+              2 * sizeof(float) + 2 * sizeof(double));
+
+  std::cout << "[In-situ Kokkos] pas=" << step
+            << " min=" << minPressure
+            << " max=" << maxPressure
+            << " moyenne=" << meanPressure
+            << " variance=" << variancePressure
+            << " temps_ms=" << elapsedMs << '\n';
+}
+// Statistiques in situ du champ de pression, version CPU, une seule passe.
+// column : colonne de pnGlobal a analyser (celle qui vient d'etre calculee)
+// step   : numero du pas de temps (pour l'affichage uniquement)
+void SEMproxy::computePressureStatisticsCPU(int column, int step)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+  if (nbNodes <= 0)
+    throw std::runtime_error("Cannot compute statistics on an empty field.");
+
+  Kokkos::fence();  // make sure previous solver kernels are done before timing
+  const auto start = std::chrono::steady_clock::now();
+
+  double minP = pnGlobal(0, column);
+  double maxP = minP;
+  double mean = 0.0;  // moyenne courante
+  double m2 = 0.0;    // cumul des carres des ecarts a la moyenne courante
+
+  for (int n = 0; n < nbNodes; n++)
+  {
+    const double x = pnGlobal(n, column);
+    if (x < minP) minP = x;
+    if (x > maxP) maxP = x;
+    // Welford : mise a jour incrementale
+    const double delta = x - mean;
+    mean += delta / (n + 1);
+    m2 += delta * (x - mean);
+  }
+  const double variance = m2 / nbNodes;  // variance de population
+
+  const double elapsedMs =
+      std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - start)
+          .count();
+  recordStats(step, "cpu", minP, maxP, mean, variance, 0.0, elapsedMs,
+              elapsedMs, 0);
+
+  std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
+            << " max=" << maxP << " moyenne=" << mean
+            << " variance=" << variance << " temps_ms=" << elapsedMs << '\n';
+}
+
+// In-situ statistics, host version: explicit GPU->host copy of one column,
+// then a single-pass CPU loop (Welford). Copy and compute are timed separately.
+// column : column of pnGlobal to analyse (the one just computed)
+// step   : time step number (display only)
+void SEMproxy::computePressureStatisticsHostCopy(int column, int step)
+{
+  const int nbNodes = m_mesh->getNumberOfNodes();
+  if (nbNodes <= 0)
+    throw std::runtime_error("Cannot compute statistics on an empty field.");
+
+  // Host buffer, allocated outside the timed region
+  Kokkos::View<float*, Layout, Kokkos::HostSpace> hostCol("hostCol", nbNodes);
+  // The column is contiguous because Layout is LayoutLeft with CUDA
+  auto col = Kokkos::subview(pnGlobal, Kokkos::ALL, column);
+
+  Kokkos::fence();  // make sure the solver kernels are done before timing
+  const auto t0 = std::chrono::steady_clock::now();
+  Kokkos::deep_copy(hostCol, col);  // the GPU -> host transfer
+  const auto t1 = std::chrono::steady_clock::now();
+
+  // Single-pass statistics on the host copy
+  double minP = hostCol(0);
+  double maxP = minP;
+  double mean = 0.0;  // running mean
+  double m2 = 0.0;    // sum of squared deviations from the running mean
+
+  for (int n = 0; n < nbNodes; n++)
+  {
+    const double x = hostCol(n);
+    if (x < minP) minP = x;
+    if (x > maxP) maxP = x;
+    // Welford: incremental update
+    const double delta = x - mean;
+    mean += delta / (n + 1);
+    m2 += delta * (x - mean);
+  }
+  const double variance = m2 / nbNodes;
+
+  const auto t2 = std::chrono::steady_clock::now();
+
+  const double copyMs =
+      std::chrono::duration<double, std::milli>(t1 - t0).count();
+  const double computeMs =
+      std::chrono::duration<double, std::milli>(t2 - t1).count();
+  const std::size_t bytes = static_cast<std::size_t>(nbNodes) * sizeof(float);
+  
+  recordStats(step, "hostcopy", minP, maxP, mean, variance, copyMs,
+              computeMs, copyMs + computeMs, bytes);
+  
+  std::cout << "[In-situ HostCopy] step=" << step << " min=" << minP
+            << " max=" << maxP << " mean=" << mean
+            << " variance=" << variance << " copy_ms=" << copyMs
+            << " compute_ms=" << computeMs << " bytes=" << bytes << '\n';
+}
+
+void SEMproxy::recordStats(int step, const char* mode, double minP,
+                           double maxP, double mean, double variance,
+                           double copyMs, double computeMs, double totalMs,
+                           std::size_t bytes)
+{
+  stats_total_ms_ += totalMs;
+  stats_count_++;
+
+  if (stats_out_.is_open())
+    stats_out_ << step << ',' << minP << ',' << maxP << ',' << mean << ','
+               << variance << ',' << totalMs << ',' << mode << ',' << copyMs
+               << ',' << computeMs << ',' << bytes << '\n';
 }
