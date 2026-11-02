@@ -2,7 +2,7 @@
 #include <cxxopts.hpp>
 #include <stdexcept>
 #include <string>
-
+#include "compression_config.hpp"
 
 class SemProxyOptions
 {
@@ -24,6 +24,8 @@ class SemProxyOptions
   std::string insitu_viz = "none";       // part 1: in-situ visualization
   std::string insitu_compress = "none";  // part 2: compression
   std::string insitu_extra = "none";     // part 3: other processing
+  std::string compress_bounds = "snapshot";  // snapshot | global
+  float       compress_amax   = 0.f;         // borne fixe si bounds == global
   int stats_interval = 0;
   std::string sismo_file = "sismos.csv";
   std::string implem = "makutu";  // makutu|shiva
@@ -51,6 +53,14 @@ class SemProxyOptions
       throw std::runtime_error("lx/ly/lz must be > 0");
     if (is_snapshots && snap_time_interval <= 0)
       throw std::runtime_error("snap-time-interval must be > 0");
+      CompressConfig cc; std::string err;
+    if (!parse_compress(insitu_compress, cc, err)) throw std::runtime_error(err);
+    if (compress_bounds != "snapshot" && compress_bounds != "global")
+      throw std::runtime_error("compress-bounds must be snapshot|global");
+    if (compress_bounds == "global" && compress_amax <= 0.f)
+      throw std::runtime_error("compress-amax must be > 0 with global bounds");
+    if (cc.enabled && !is_snapshots)
+      throw std::runtime_error("insitu-compress requires --is-snapshots");
   }
   // Bind CLI flags to this instance (no --help here)
   static void bind_cli(cxxopts::Options& opts, SemProxyOptions& o)
@@ -115,7 +125,11 @@ class SemProxyOptions
         "insitu-compress", "In-situ compression mode (none = disabled)",
         cxxopts::value<std::string>(o.insitu_compress))(
         "insitu-extra", "Other in-situ processing (none = disabled)",
-        cxxopts::value<std::string>(o.insitu_extra));
+        cxxopts::value<std::string>(o.insitu_extra))
+        ("compress-bounds", "Quantization bounds: snapshot|global",
+          cxxopts::value<std::string>(o.compress_bounds))
+         ("compress-amax", "Fixed max |p| used when compress-bounds=global",
+          cxxopts::value<float>(o.compress_amax));
 
  }  
 };
