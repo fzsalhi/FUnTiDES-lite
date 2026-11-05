@@ -93,7 +93,7 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
       throw std::runtime_error("Cannot open compress file: " +
                                opt.compress_file);
        compress_out_ << "step,raw_bytes,stored_bytes,ratio,time_ms,write_ms,"
-                     "csv_bytes\n";
+                     "csv_bytes,rmse_norm,max_abs_norm\n";
   }
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
   if (stats_interval_ > 0)
@@ -821,7 +821,17 @@ void SEMproxy::compressSnapshot(int step)
   const double timeMs = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - t0)
                             .count();
-
+   
+  
+  // Reconstruction error, computed after the timer (not part of time_ms):
+  // undo the RLE on a copy, dequantize, and compare with the original field.
+  std::vector<std::uint8_t> chk = buf;
+  if (compress_cfg_.rle && !cmp::rle_undo(chk))
+    throw std::runtime_error("compressSnapshot: rle_undo failed");
+  std::vector<float> rec;
+  if (!cmp::dequantize(chk.data(), chk.size(), rec))
+    throw std::runtime_error("compressSnapshot: dequantize failed");
+  const cmp::ErrorStats err = cmp::compare(field.data(), rec.data(), n);
   const std::uint64_t rawBytes = n * sizeof(float);
   const std::uint64_t storedBytes = buf.size();
 
@@ -858,5 +868,6 @@ void SEMproxy::compressSnapshot(int step)
   if (compress_out_.is_open())
     compress_out_ << step << ',' << rawBytes << ',' << storedBytes << ','
                   << cmp::ratio(rawBytes, storedBytes) << ',' << timeMs << ','
-                  << writeMs << ',' << csvBytes << '\n';
+                  << writeMs << ',' << csvBytes << ',' << err.rmse_norm << ','
+                  << err.max_abs_norm << '\n';;
 }
