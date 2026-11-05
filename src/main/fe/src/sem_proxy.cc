@@ -93,7 +93,8 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
       throw std::runtime_error("Cannot open compress file: " +
                                opt.compress_file);
        compress_out_ << "step,raw_bytes,stored_bytes,ratio,time_ms,write_ms,"
-                     "csv_bytes,rmse_norm,max_abs_norm\n";
+                     "csv_bytes,rmse_norm,max_abs_norm,d_min,d_max,d_mean,"
+                     "d_var_rel,rcv_orig,rcv_rec\n";
   }
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
   if (stats_interval_ > 0)
@@ -832,6 +833,59 @@ void SEMproxy::compressSnapshot(int step)
   if (!cmp::dequantize(chk.data(), chk.size(), rec))
     throw std::runtime_error("compressSnapshot: dequantize failed");
   const cmp::ErrorStats err = cmp::compare(field.data(), rec.data(), n);
+  
+  // Statistics of a field (single pass, Welford), used to compare the original
+  // field with the reconstructed one: do the TP2 conclusions still hold?
+  struct FieldStats { double mn, mx, mean, var; };
+  auto fieldStats = [n](const std::vector<float>& v) {
+    FieldStats s{v[0], v[0], 0.0, 0.0};
+    double m2 = 0.0;
+    for (std::uint64_t k = 0; k < n; k++)
+    {
+      const double x = v[k];
+      if (x < s.mn) s.mn = x;
+      if (x > s.mx) s.mx = x;
+      const double delta = x - s.mean;
+      s.mean += delta / static_cast<double>(k + 1);
+      m2 += delta * (x - s.mean);
+    }
+    s.var = m2 / static_cast<double>(n);
+    return s;
+  };
+  const FieldStats so = fieldStats(field);
+  const FieldStats sr = fieldStats(rec);
+  const double amax = cmp::max_abs(field.data(), n);
+  // differences normalized by max|p| (no point-wise relative error: the field
+  // has many near-zero values); the variance is positive, so a relative error
+  // makes sense there.
+  const double dMin = amax > 0 ? (sr.mn - so.mn) / amax : 0.0;
+  const double dMax = amax > 0 ? (sr.mx - so.mx) / amax : 0.0;
+  const double dMean = amax > 0 ? (sr.mean - so.mean) / amax : 0.0;
+  const double dVarRel = so.var > 0 ? (sr.var - so.var) / so.var : 0.0;
+  
+  // Same interpolation as the seismogram in run(), for receiver 0, applied to
+  // the original and to the reconstructed field: does quantization destroy the
+  // weak amplitudes seen by the receiver?
+  double rcvOrig = 0.0;
+  double rcvRec = 0.0;
+  if (!rcv_coords_.empty())
+  {
+    const int order = m_mesh->getOrder();
+    for (int i = 0; i < order + 1; i++)
+    {
+      for (int j = 0; j < order + 1; j++)
+      {
+        for (int k = 0; k < order + 1; k++)
+        {
+          const int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[0], i, j, k);
+          const int local = i + j * (order + 1) + k * (order + 1) * (order + 1);
+          const double w = rhsWeightsRcv(0, local);
+          rcvOrig += static_cast<double>(field[nodeIdx]) * w;
+          rcvRec += static_cast<double>(rec[nodeIdx]) * w;
+        }
+      }
+    }
+  }
   const std::uint64_t rawBytes = n * sizeof(float);
   const std::uint64_t storedBytes = buf.size();
 
@@ -869,5 +923,7 @@ void SEMproxy::compressSnapshot(int step)
     compress_out_ << step << ',' << rawBytes << ',' << storedBytes << ','
                   << cmp::ratio(rawBytes, storedBytes) << ',' << timeMs << ','
                   << writeMs << ',' << csvBytes << ',' << err.rmse_norm << ','
-                  << err.max_abs_norm << '\n';;
+                  << err.max_abs_norm << ',' << dMin << ',' << dMax << ','
+                  << dMean << ',' << dVarRel << ',' << rcvOrig << ','
+                  << rcvRec << '\n';
 }
