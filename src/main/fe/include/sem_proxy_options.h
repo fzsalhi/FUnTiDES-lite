@@ -24,6 +24,7 @@ class SemProxyOptions
   std::string insitu_viz = "none";       // part 1: in-situ visualization
   std::string insitu_compress = "none";  // part 2: compression
   std::string insitu_extra = "none";     // part 3: other processing
+  std::string compress_file = "";  // CSV output of the compression ratios
   std::string compress_bounds = "snapshot";  // snapshot | global
   float       compress_amax   = 0.f;         // borne fixe si bounds == global
   int stats_interval = 0;
@@ -128,8 +129,10 @@ class SemProxyOptions
         cxxopts::value<std::string>(o.insitu_extra))
         ("compress-bounds", "Quantization bounds: snapshot|global",
           cxxopts::value<std::string>(o.compress_bounds))
-         ("compress-amax", "Fixed max |p| used when compress-bounds=global",
-          cxxopts::value<float>(o.compress_amax));
+        ("compress-amax", "Fixed max |p| used when compress-bounds=global",
+          cxxopts::value<float>(o.compress_amax))
+        ("compress-file", "Output CSV file for the in-situ compression ratios",
+          cxxopts::value<std::string>(o.compress_file));
 
  }  
 };

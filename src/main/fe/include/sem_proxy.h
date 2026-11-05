@@ -18,6 +18,7 @@
 #include <fstream>
 #include <limits>
 #include "sem_proxy_options.h"
+#include "compression_config.hpp"
 
 /* Streaming statistics (Welford's algorithm): constant memory*/
 
@@ -114,6 +115,13 @@ class SEMproxy
   std::string insitu_viz_;
   std::string insitu_compress_;
   std::string insitu_extra_;
+  CompressConfig compress_cfg_;
+  // CSV output of the compression ratios (one row per compressed snapshot)
+  std::ofstream compress_out_;
+  // Compress the newest pressure field (column i1) with the pipeline given by
+  // --insitu-compress (quantize, then RLE if requested) and log size/time in
+  // the compression CSV. Called at snapshot steps from runInSituProcessing().
+  void compressSnapshot(int step);
   // Returns false to request a clean stop of the simulation.
   bool runInSituProcessing(int step);
   int stats_interval_ = 0;  // intervalle des statistiques in situ

@@ -21,7 +21,7 @@
 #include <fstream>
 #include <vector>
 #include <limits>
-
+#include "rle.hpp"
 
 #ifdef SEMPROXY_ENABLE_CUFFT
 void computeSismoFFTcuFFT(const std::vector<float>& signals,
@@ -78,6 +78,22 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   insitu_viz_ = opt.insitu_viz;
   insitu_compress_ = opt.insitu_compress;
   insitu_extra_ = opt.insitu_extra;
+  // Parse --insitu-compress (e.g. "raw+rle", "int8+delta+rle"). The syntax was
+  // already checked in SemProxyOptions::validate(); here we keep the result.
+  {
+    std::string err;
+    if (!parse_compress(insitu_compress_, compress_cfg_, err))
+      throw std::runtime_error(err);
+  }
+    // CSV of the compression ratios, only when a file name is given
+  if (compress_cfg_.enabled && !opt.compress_file.empty())
+  {
+    compress_out_.open(opt.compress_file);
+    if (!compress_out_)
+      throw std::runtime_error("Cannot open compress file: " +
+                               opt.compress_file);
+    compress_out_ << "step,raw_bytes,stored_bytes,ratio,time_ms\n";
+  }
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
   if (stats_interval_ > 0)
     sismo_stats_.assign(rcv_coords_.size(), StreamStats());
@@ -759,6 +775,9 @@ bool SEMproxy::runInSituProcessing(int step)
   // Part 2: compression
   if (insitu_compress_ != "none")
   {
+     // Compress at the same steps as the snapshots (validate() requires
+    // --is-snapshots whenever compression is enabled)
+    if (step % snap_time_interval_ == 0) compressSnapshot(step);
   }
 
   // Part 3: other processing (steering, driven outputs, accumulated maps)
@@ -767,4 +786,46 @@ bool SEMproxy::runInSituProcessing(int step)
   }
 
   return true;  // returning false would request a clean stop
+}
+// Compress the newest pressure field (column i1) with the pipeline given by
+// --insitu-compress: quantize (raw, f16, int8, int16), then RLE if requested.
+// Logs the raw size, the stored size, the ratio and the time in the CSV.
+void SEMproxy::compressSnapshot(int step)
+{
+  if (compress_cfg_.delta)
+    throw std::runtime_error(
+        "compressSnapshot: the DELTA stage is not implemented yet");
+
+  const std::uint64_t n =
+      static_cast<std::uint64_t>(m_mesh->getNumberOfNodes());
+
+  const auto t0 = std::chrono::steady_clock::now();
+
+  // Copy the column into a contiguous host buffer (works with both layouts)
+  Kokkos::fence();
+  std::vector<float> field(n);
+  for (std::uint64_t k = 0; k < n; k++)
+    field[k] = pnGlobal(static_cast<int>(k), i1);
+
+  // Header + (quantized) payload
+  std::vector<std::uint8_t> buf;
+  if (!cmp::quantize(field.data(), n, compress_cfg_.mode, compress_cfg_.nbits,
+                     static_cast<std::uint32_t>(step), buf))
+    throw std::runtime_error("compressSnapshot: quantize failed");
+
+  // Lossless stage on the payload
+  if (compress_cfg_.rle && !cmp::rle_apply(buf))
+    throw std::runtime_error("compressSnapshot: rle_apply failed");
+
+  const double timeMs = std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() - t0)
+                            .count();
+
+  const std::uint64_t rawBytes = n * sizeof(float);
+  const std::uint64_t storedBytes = buf.size();
+
+  if (compress_out_.is_open())
+    compress_out_ << step << ',' << rawBytes << ',' << storedBytes << ','
+                  << cmp::ratio(rawBytes, storedBytes) << ',' << timeMs
+                  << '\n';
 }
