@@ -92,7 +92,8 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     if (!compress_out_)
       throw std::runtime_error("Cannot open compress file: " +
                                opt.compress_file);
-    compress_out_ << "step,raw_bytes,stored_bytes,ratio,time_ms\n";
+       compress_out_ << "step,raw_bytes,stored_bytes,ratio,time_ms,write_ms,"
+                     "csv_bytes\n";
   }
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
   if (stats_interval_ > 0)
@@ -824,8 +825,38 @@ void SEMproxy::compressSnapshot(int step)
   const std::uint64_t rawBytes = n * sizeof(float);
   const std::uint64_t storedBytes = buf.size();
 
+  // Write the compressed buffer next to the CSV snapshots and time the write
+  std::filesystem::create_directories(snap_folder_);
+  char binName[256];
+  snprintf(binName, sizeof(binName), "%s/snapshot_it_%06d.cmp",
+           snap_folder_.c_str(), step);
+  const auto tw0 = std::chrono::steady_clock::now();
+  {
+    std::ofstream f(binName, std::ios::binary);
+    if (!f)
+      throw std::runtime_error("compressSnapshot: cannot open " +
+                               std::string(binName));
+    f.write(reinterpret_cast<const char*>(buf.data()),
+            static_cast<std::streamsize>(buf.size()));
+    if (!f)
+      throw std::runtime_error("compressSnapshot: write error on " +
+                               std::string(binName));
+  }
+  const double writeMs = std::chrono::duration<double, std::milli>(
+                             std::chrono::steady_clock::now() - tw0)
+                             .count();
+
+  // Size of the CSV snapshot written at the same step (0 if it is absent)
+  char csvName[256];
+  snprintf(csvName, sizeof(csvName), "%s/snapshot_it_%06d.csv",
+           snap_folder_.c_str(), step);
+  std::error_code ec;
+  const std::uintmax_t csvSize = std::filesystem::file_size(csvName, ec);
+  const std::uint64_t csvBytes =
+      ec ? 0 : static_cast<std::uint64_t>(csvSize);
+
   if (compress_out_.is_open())
     compress_out_ << step << ',' << rawBytes << ',' << storedBytes << ','
-                  << cmp::ratio(rawBytes, storedBytes) << ',' << timeMs
-                  << '\n';
+                  << cmp::ratio(rawBytes, storedBytes) << ',' << timeMs << ','
+                  << writeMs << ',' << csvBytes << '\n';
 }
