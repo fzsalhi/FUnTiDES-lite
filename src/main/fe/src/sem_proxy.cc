@@ -78,6 +78,18 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   insitu_viz_ = opt.insitu_viz;
   insitu_compress_ = opt.insitu_compress;
   insitu_extra_ = opt.insitu_extra;
+  visu_plane_ = opt.visu_plane;
+  visu_position_ = opt.visu_position;
+  visu_width_ = opt.visu_width;
+  visu_height_ = opt.visu_height;
+  visu_format_ = opt.visu_format;
+  visu_interval_ = opt.visu_interval;
+  visu_folder_ = opt.visu_folder;
+  visu_scale_ = opt.visu_scale;
+  visu_fsync_ = opt.visu_fsync;
+
+  if (insitu_viz_ != "none" && insitu_viz_ != "ppm")
+      throw std::runtime_error("Unknown visualization mode: " + insitu_viz_);
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
   if (stats_interval_ > 0)
     sismo_stats_.assign(rcv_coords_.size(), StreamStats());
@@ -140,6 +152,20 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   else
   {
     throw std::runtime_error("Incorrect mesh type (SEMproxy ctor.)");
+  }
+  if (insitu_viz_ == "ppm")
+  {
+      std::filesystem::create_directories(visu_folder_);
+
+      visu_slice_ = std::make_unique<TP3SliceCPU>(
+          *m_mesh,
+          nb_elements_,
+          domain_size_,
+          visu_plane_,
+          visu_position_,
+          visu_width_,
+          visu_height_
+      );
   }
   // time parameters
   if (opt.autodt)
@@ -744,16 +770,52 @@ void SEMproxy::recordStats(int step, const char* mode, double minP,
                << ',' << computeMs << ',' << bytes << '\n';
 }
 
-// Single entry point of the TP3 in-situ processing (see sem_proxy.h).
-// Each part adds its own code in its own block below, so the time loop in
-// run() does not have to change again.
+void SEMproxy::savePPMSlice(int step, int column)
+{
+    if (!visu_slice_) return;
+    Kokkos::fence();
+
+    std::ostringstream filename;
+    filename << visu_folder_ << "/slice_" << visu_plane_ << "_it_"
+             << std::setw(6) << std::setfill('0') << step;
+
+    const TP3FrameMetrics metrics = visu_slice_->savePPM(
+        pnGlobal, column, filename.str(), visu_format_, visu_scale_, visu_fsync_);
+
+    const std::filesystem::path csv_path =
+        std::filesystem::path(visu_folder_) / "visu_metrics.csv";
+    const bool write_header = !std::filesystem::exists(csv_path) ||
+                              std::filesystem::file_size(csv_path) == 0;
+    std::ofstream csv(csv_path, std::ios::app);
+    if (!csv) throw std::runtime_error("Cannot write visualization metrics CSV");
+    csv << std::setprecision(12);
+    if (write_header) {
+        csv << "step,plane,format,width,height,size_bytes,extract_ms,color_ms,"
+               "encode_ms,write_ms,fsync_ms,output_total_ms,frame_total_ms,"
+               "fsync_enabled,path\n";
+    }
+    for (const auto& file : metrics.files) {
+        csv << step << ',' << visu_plane_ << ',' << file.format << ','
+            << visu_width_ << ',' << visu_height_ << ',' << file.size_bytes << ','
+            << metrics.extract_ms << ',' << metrics.color_ms << ','
+            << file.encode_ms << ',' << file.write_ms << ',' << file.fsync_ms << ','
+            << file.total_ms << ',' << metrics.total_ms << ','
+            << (file.fsync_enabled ? 1 : 0) << ',' << file.path << '\n';
+    }
+    if (!csv) throw std::runtime_error("Error writing visualization metrics CSV");
+}
+
 bool SEMproxy::runInSituProcessing(int step)
 {
   (void)step;  // unused until the parts are implemented
 
   // Part 1: in-situ visualization
-  if (insitu_viz_ != "none")
+  if (insitu_viz_ == "ppm")
   {
+      if (step % visu_interval_ == 0)
+      {
+          savePPMSlice(step, i1);
+      }
   }
 
   // Part 2: compression

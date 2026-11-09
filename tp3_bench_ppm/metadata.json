@@ -1,0 +1,54 @@
+{
+  "recorded_utc": "2026-11-02T11:03:18.368487+00:00",
+  "hostname": "wiam-HP-Laptop-15-dw2xxx",
+  "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+  "python": "3.10.12 (main, Aug 31 2026, 10:18:17) [GCC 11.4.0]",
+  "cpu_threads": 8,
+  "OMP_NUM_THREADS": 4,
+  "git_commit": "cc55b408fba4ac54781c9ea16f9406118534ae02",
+  "filesystem": "Sys. de fichiers Type blocs de 1K  Utilisé Disponible Uti% Monté sur\n/dev/nvme0n1p5   ext4   960578928 73860752  837890128   9% /",
+  "executable": "/home/wiam/traitement_in_situ/FUnTiDES-lite/build-tp3-cpu/bin/semproxy",
+  "options": {
+    "exe": "build-tp3-cpu/bin/semproxy",
+    "output": "tp3_bench_ppm",
+    "case": [
+      [
+        "TEST41",
+        20,
+        20,
+        20
+      ]
+    ],
+    "runs": 5,
+    "warmups": 1,
+    "threads": 4,
+    "order": 2,
+    "timemax": 0.5,
+    "dt": 0.001,
+    "interval": 50,
+    "width": 256,
+    "height": 256,
+    "plane": "XY",
+    "position": 0.5,
+    "skip_paired": false
+  },
+  "cases": [
+    [
+      "TEST41",
+      20,
+      20,
+      20
+    ]
+  ],
+  "cmake_options": {
+    "CMAKE_BUILD_TYPE:STRING": "Release",
+    "COMPILE_SEM:BOOL": "ON",
+    "ENABLE_CUDA:BOOL": "OFF",
+    "Kokkos_ENABLE_OPENMP:BOOL": "ON",
+    "SEMPROXY_ENABLE_CUFFT:BOOL": "OFF",
+    "USE_KOKKOS:BOOL": "ON",
+    "USE_VECTOR:BOOL": "OFF"
+  },
+  "timing": "Python time.perf_counter around process, including startup and teardown; C++ steady_clock per phase",
+  "fsync_definition": "write_ms = open and write, fsync_ms = additional fsync syscall time; total_ms includes encoding and close"
+}

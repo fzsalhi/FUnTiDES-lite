@@ -2,6 +2,7 @@
 #include <cxxopts.hpp>
 #include <stdexcept>
 #include <string>
+#include <cmath>
 
 
 class SemProxyOptions
@@ -25,7 +26,7 @@ class SemProxyOptions
   std::string insitu_compress = "none";  // part 2: compression
   std::string insitu_extra = "none";     // part 3: other processing
   int stats_interval = 0;
-  std::string sismo_file = "sismos.csv";
+  std::string sismo_file = "";
   std::string implem = "makutu";  // makutu|shiva
   std::string method = "sem";     // sem|dg
   std::string mesh = "cartesian";
@@ -42,6 +43,15 @@ class SemProxyOptions
   bool is_snapshots = false;
   int snap_time_interval = 50;
   std::string snap_folder = "../data";
+  std::string visu_plane = "XY";
+  float visu_position = 0.5f;
+  int visu_width = 256;
+  int visu_height = 256;
+  std::string visu_format = "both";
+  int visu_interval = 50;
+  std::string visu_folder = "tp3_images";
+  float visu_scale = 0.0f;
+  bool visu_fsync = false;
   void validate() const
   {
     if (order < 1) throw std::runtime_error("order must be >= 1");
@@ -51,6 +61,32 @@ class SemProxyOptions
       throw std::runtime_error("lx/ly/lz must be > 0");
     if (is_snapshots && snap_time_interval <= 0)
       throw std::runtime_error("snap-time-interval must be > 0");
+    if (insitu_viz == "ppm") {
+    if (mesh != "cartesian")
+        throw std::runtime_error("PPM visualization requires cartesian mesh");
+
+    if (visu_plane != "XY" && visu_plane != "XZ" && visu_plane != "YZ")
+        throw std::runtime_error("Invalid visualization plane");
+
+    if (!std::isfinite(visu_position) ||
+        visu_position < 0.0f || visu_position > 1.0f)
+        throw std::runtime_error("Invalid slice position");
+
+    if (visu_width < 2 || visu_height < 2)
+        throw std::runtime_error("Invalid image dimensions");
+
+    if (visu_interval <= 0)
+        throw std::runtime_error("Invalid visualization interval");
+
+    if (visu_format != "P3" && visu_format != "P6" &&
+        visu_format != "both")
+        throw std::runtime_error("Invalid PPM format");
+
+    if (!std::isfinite(visu_scale) || visu_scale < 0.0f)
+        throw std::runtime_error("Invalid visualization scale");
+
+    if (visu_folder.empty())
+        throw std::runtime_error("Invalid visualization folder");}
   }
   // Bind CLI flags to this instance (no --help here)
   static void bind_cli(cxxopts::Options& opts, SemProxyOptions& o)
@@ -117,5 +153,24 @@ class SemProxyOptions
         "insitu-extra", "Other in-situ processing (none = disabled)",
         cxxopts::value<std::string>(o.insitu_extra));
 
- }  
+    opts.add_options()
+    ("visu-plane", "Slice plane: XY, XZ or YZ",
+        cxxopts::value<std::string>(o.visu_plane))
+    ("visu-position", "Relative slice position",
+        cxxopts::value<float>(o.visu_position))
+    ("visu-width", "Image width",
+        cxxopts::value<int>(o.visu_width))
+    ("visu-height", "Image height",
+        cxxopts::value<int>(o.visu_height))
+    ("visu-format", "PPM format: P3, P6 or both",
+        cxxopts::value<std::string>(o.visu_format))
+    ("visu-interval", "Visualization interval",
+        cxxopts::value<int>(o.visu_interval))
+    ("visu-folder", "Output directory",
+        cxxopts::value<std::string>(o.visu_folder))
+    ("visu-scale", "Fixed symmetric pressure scale (0 = automatic)",
+        cxxopts::value<float>(o.visu_scale))
+    ("visu-fsync", "Force fsync on each PPM output",
+        cxxopts::value<bool>(o.visu_fsync));
+    }
 };
