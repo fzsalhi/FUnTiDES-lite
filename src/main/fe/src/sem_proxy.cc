@@ -317,6 +317,7 @@ void SEMproxy::run()
        << endl;    
   
   
+  if (insitu_compress_ != "none") compressSeismograms();
   if (insitu_extra_ == "steering")
   {
     const double avgUs =
@@ -839,6 +840,56 @@ bool SEMproxy::runInSituProcessing(int step)
 
   return true;  // returning false would request a clean stop
 }
+// Compress every seismogram (one trace per receiver) with the pipeline given
+// by --insitu-compress. Each trace is quantized with its own scale (its
+// maximum), unlike the snapshots where the scale follows the whole field, so
+// weak signals are not flattened by the source peak.
+// stored_bytes includes the 40-byte header; raw_bytes = samples * 4.
+void SEMproxy::compressSeismograms()
+{
+  const int nRcv = static_cast<int>(rcv_coords_.size());
+  const std::uint64_t ns = static_cast<std::uint64_t>(num_sample_);
+  for (int r = 0; r < nRcv; r++)
+  {
+    std::vector<float> trace(ns);
+    for (std::uint64_t t = 0; t < ns; t++)
+      trace[t] = pnAtReceiver(r, static_cast<int>(t));
+
+    std::vector<std::uint8_t> buf;
+    if (!cmp::quantize(trace.data(), ns, compress_cfg_.mode, compress_cfg_.nbits,
+                       0, buf))
+      throw std::runtime_error("compressSeismograms: quantize failed");
+    if (compress_cfg_.delta && !cmp::delta_apply(buf))
+      throw std::runtime_error("compressSeismograms: delta_apply failed");
+    if (compress_cfg_.rle && !cmp::rle_apply(buf))
+      throw std::runtime_error("compressSeismograms: rle_apply failed");
+    const std::uint64_t stored = buf.size();
+
+    // Reconstruction error, same order as the snapshots (undo in reverse)
+    std::vector<std::uint8_t> chk = buf;
+    if (compress_cfg_.rle && !cmp::rle_undo(chk))
+      throw std::runtime_error("compressSeismograms: rle_undo failed");
+    if (compress_cfg_.delta && !cmp::delta_undo(chk))
+      throw std::runtime_error("compressSeismograms: delta_undo failed");
+    std::vector<float> rec;
+    if (!cmp::dequantize(chk.data(), chk.size(), rec))
+      throw std::runtime_error("compressSeismograms: dequantize failed");
+    const cmp::ErrorStats err = cmp::compare(trace.data(), rec.data(), ns);
+
+    // Leading exact zeros: the wave has not reached the receiver yet
+    std::uint64_t zeros = 0;
+    while (zeros < ns && trace[zeros] == 0.0f) zeros++;
+
+    const double raw = static_cast<double>(ns) * sizeof(float);
+    std::cout << "[compress-sismo] rcv=" << r << " raw_bytes=" << raw
+              << " stored_bytes=" << stored << " ratio="
+              << raw / static_cast<double>(stored)
+              << " rmse_norm=" << err.rmse_norm
+              << " max_abs_norm=" << err.max_abs_norm
+              << " leading_zero_samples=" << zeros << "/" << ns << std::endl;
+  }
+}
+
 
 // Steering: read the control file and apply its commands. Format: one
 // "key=value" per line, '#' starts a comment. Supported keys:

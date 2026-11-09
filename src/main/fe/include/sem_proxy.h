@@ -138,6 +138,9 @@ class SEMproxy
   // --insitu-compress (quantize, then RLE if requested) and log size/time in
   // the compression CSV. Called at snapshot steps from runInSituProcessing().
   void compressSnapshot(int step);
+    // Compress each receiver trace with the --insitu-compress pipeline and print
+  // the ratio and the reconstruction error (one line per receiver).
+  void compressSeismograms();
   // Returns false to request a clean stop of the simulation.
   bool runInSituProcessing(int step);
   // Read the steering control file and apply its commands (snapshot interval,
