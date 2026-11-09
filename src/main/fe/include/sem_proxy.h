@@ -116,6 +116,11 @@ class SEMproxy
   std::string insitu_compress_;
   std::string insitu_extra_;
   CompressConfig compress_cfg_;
+  // Node traversal order used before compression ("natural" or "scan").
+  // node_order_[k] = index of the node stored at position k; it is built once,
+  // on the first compressed snapshot, from the node coordinates.
+  std::string compress_order_ = "natural";
+  std::vector<int> node_order_;
   // CSV output of the compression ratios (one row per compressed snapshot)
   std::ofstream compress_out_;
   // Compress the newest pressure field (column i1) with the pipeline given by

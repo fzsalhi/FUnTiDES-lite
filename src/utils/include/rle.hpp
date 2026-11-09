@@ -122,4 +122,106 @@ inline bool rle_undo(std::vector<std::uint8_t>& buf)
   std::memcpy(buf.data(), &h, sizeof(Header));
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// DELTA stage: replace each element by its difference with the previous one
+// (the first element is kept as is). Neighbouring nodes have close values, so
+// the differences are small and repeat more often, which helps the RLE.
+// The arithmetic is done on unsigned integers (modulo 2^bits), so it is
+// exactly reversible, with no overflow problem.
+// ---------------------------------------------------------------------------
+
+// Width in bytes of one payload element, deduced from the header (0 if invalid).
+inline std::size_t delta_width(const Header& h)
+{
+  switch (h.mode)
+  {
+    case Mode::Raw:  return 4;
+    case Mode::F16:  return 2;
+    case Mode::IntN: return h.nbits / 8;
+  }
+  return 0;
+}
+
+template <typename T>
+inline void delta_forward(std::uint8_t* p, std::size_t count)
+{
+  T prev = 0;
+  for (std::size_t i = 0; i < count; i++)
+  {
+    T cur;
+    std::memcpy(&cur, p + i * sizeof(T), sizeof(T));
+    const T d = static_cast<T>(cur - prev);
+    std::memcpy(p + i * sizeof(T), &d, sizeof(T));
+    prev = cur;
+  }
+}
+
+template <typename T>
+inline void delta_backward(std::uint8_t* p, std::size_t count)
+{
+  T prev = 0;
+  for (std::size_t i = 0; i < count; i++)
+  {
+    T d;
+    std::memcpy(&d, p + i * sizeof(T), sizeof(T));
+    const T cur = static_cast<T>(d + prev);
+    std::memcpy(p + i * sizeof(T), &cur, sizeof(T));
+    prev = cur;
+  }
+}
+
+// Apply DELTA in place on the payload of a buffer produced by quantize().
+// Must be called BEFORE rle_apply(). Sets the DELTA flag; payload_size does not
+// change. Returns false if the buffer is invalid, already DELTA- or RLE-coded.
+inline bool delta_apply(std::vector<std::uint8_t>& buf)
+{
+  if (buf.size() < sizeof(Header)) return false;
+  Header h;
+  std::memcpy(&h, buf.data(), sizeof(Header));
+  if (h.magic != MAGIC || h.version != VERSION) return false;
+  if (h.flags & (DELTA | RLE)) return false;
+  if (buf.size() != sizeof(Header) + h.payload_size) return false;
+
+  const std::size_t w = delta_width(h);
+  if (w != 1 && w != 2 && w != 4) return false;
+  if (h.payload_size % w != 0) return false;
+  const std::size_t count = static_cast<std::size_t>(h.payload_size) / w;
+
+  std::uint8_t* p = buf.data() + sizeof(Header);
+  if (w == 1) delta_forward<std::uint8_t>(p, count);
+  else if (w == 2) delta_forward<std::uint16_t>(p, count);
+  else delta_forward<std::uint32_t>(p, count);
+
+  h.flags = static_cast<std::uint8_t>(h.flags | DELTA);
+  std::memcpy(buf.data(), &h, sizeof(Header));
+  return true;
+}
+
+// Inverse of delta_apply(). Must be called AFTER rle_undo() (the RLE flag must
+// already be cleared). Clears the DELTA flag so the buffer can be given to
+// dequantize(). Returns false if the buffer is invalid or not DELTA-coded.
+inline bool delta_undo(std::vector<std::uint8_t>& buf)
+{
+  if (buf.size() < sizeof(Header)) return false;
+  Header h;
+  std::memcpy(&h, buf.data(), sizeof(Header));
+  if (h.magic != MAGIC || h.version != VERSION) return false;
+  if (!(h.flags & DELTA) || (h.flags & RLE)) return false;
+  if (buf.size() != sizeof(Header) + h.payload_size) return false;
+
+  const std::size_t w = delta_width(h);
+  if (w != 1 && w != 2 && w != 4) return false;
+  if (h.payload_size % w != 0) return false;
+  const std::size_t count = static_cast<std::size_t>(h.payload_size) / w;
+
+  std::uint8_t* p = buf.data() + sizeof(Header);
+  if (w == 1) delta_backward<std::uint8_t>(p, count);
+  else if (w == 2) delta_backward<std::uint16_t>(p, count);
+  else delta_backward<std::uint32_t>(p, count);
+
+  h.flags = static_cast<std::uint8_t>(h.flags & ~DELTA);
+  std::memcpy(buf.data(), &h, sizeof(Header));
+  return true;
+}
 }  // namespace cmp

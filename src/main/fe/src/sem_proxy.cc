@@ -22,7 +22,8 @@
 #include <vector>
 #include <limits>
 #include "rle.hpp"
-
+#include <algorithm>
+#include <numeric>
 #ifdef SEMPROXY_ENABLE_CUFFT
 void computeSismoFFTcuFFT(const std::vector<float>& signals,
                           int nReceivers,
@@ -78,6 +79,13 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   insitu_viz_ = opt.insitu_viz;
   insitu_compress_ = opt.insitu_compress;
   insitu_extra_ = opt.insitu_extra;
+
+  // Node traversal order used before compression
+  compress_order_ = opt.compress_order;
+  if (compress_order_ != "natural" && compress_order_ != "scan" && compress_order_ != "scanz")
+    throw std::runtime_error(
+        "--compress-order must be 'natural' or 'scan' or 'scanz', got '" +
+        compress_order_ + "'");
   // Parse --insitu-compress (e.g. "raw+rle", "int8+delta+rle"). The syntax was
   // already checked in SemProxyOptions::validate(); here we keep the result.
   {
@@ -794,13 +802,40 @@ bool SEMproxy::runInSituProcessing(int step)
 // Logs the raw size, the stored size, the ratio and the time in the CSV.
 void SEMproxy::compressSnapshot(int step)
 {
-  if (compress_cfg_.delta)
-    throw std::runtime_error(
-        "compressSnapshot: the DELTA stage is not implemented yet");
 
   const std::uint64_t n =
       static_cast<std::uint64_t>(m_mesh->getNumberOfNodes());
+  
+  
+  // Node traversal order. "scan" sorts the nodes by z, then y, then x, so that
+  // consecutive values are spatial neighbours. The permutation is built once
+  // (outside the timed section) and is deterministic: the decoder can rebuild
+  // it from the mesh, it is not stored in the .cmp file.
+  if ((compress_order_ == "scan" || compress_order_ == "scanz") && node_order_.empty())
+  {
+    node_order_.resize(n);
+    std::iota(node_order_.begin(), node_order_.end(), 0);
+    std::stable_sort(node_order_.begin(), node_order_.end(),
+                     [this](int a, int b)
+                     {
+                       // scan: z is the slowest key (x varies fastest)
+                       // scanz: x is the slowest key (z varies fastest)
+                       for (int s = 0; s < 3; s++)
+                       {
+                         const int d = (compress_order_ == "scanz") ? s : 2 - s;
+                         const auto ca = m_mesh->nodeCoord(a, d);
+                         const auto cb = m_mesh->nodeCoord(b, d);
+                         if (ca != cb) return ca < cb;
+                       }
+                       return false;
+                     });
 
+     std::uint64_t moved = 0;
+    for (std::uint64_t k = 0; k < n; k++)
+      if (node_order_[k] != static_cast<int>(k)) moved++;
+    std::cout << "[compress] scan order built: " << moved << " of " << n
+              << " nodes change position" << std::endl;
+  }
   const auto t0 = std::chrono::steady_clock::now();
 
   // Copy the column into a contiguous host buffer (works with both layouts)
@@ -809,16 +844,28 @@ void SEMproxy::compressSnapshot(int step)
   for (std::uint64_t k = 0; k < n; k++)
     field[k] = pnGlobal(static_cast<int>(k), i1);
 
+
+
+  // Field in traversal order (the original order for "natural")
+  std::vector<float> ordered;
+  if (!node_order_.empty())
+  {
+    ordered.resize(n);
+    for (std::uint64_t k = 0; k < n; k++) ordered[k] = field[node_order_[k]];
+  }
+  const std::vector<float>& toCompress = node_order_.empty() ? field : ordered;
   // Header + (quantized) payload
   std::vector<std::uint8_t> buf;
-  if (!cmp::quantize(field.data(), n, compress_cfg_.mode, compress_cfg_.nbits,
+  if (!cmp::quantize(toCompress.data(), n, compress_cfg_.mode, compress_cfg_.nbits,
                      static_cast<std::uint32_t>(step), buf))
     throw std::runtime_error("compressSnapshot: quantize failed");
 
-  // Lossless stage on the payload
+  
+    // Lossless stages on the payload: DELTA first, then RLE
+  if (compress_cfg_.delta && !cmp::delta_apply(buf))
+    throw std::runtime_error("compressSnapshot: delta_apply failed");
   if (compress_cfg_.rle && !cmp::rle_apply(buf))
     throw std::runtime_error("compressSnapshot: rle_apply failed");
-
   const double timeMs = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - t0)
                             .count();
@@ -829,9 +876,20 @@ void SEMproxy::compressSnapshot(int step)
   std::vector<std::uint8_t> chk = buf;
   if (compress_cfg_.rle && !cmp::rle_undo(chk))
     throw std::runtime_error("compressSnapshot: rle_undo failed");
+  if (compress_cfg_.delta && !cmp::delta_undo(chk))
+    throw std::runtime_error("compressSnapshot: delta_undo failed");
   std::vector<float> rec;
   if (!cmp::dequantize(chk.data(), chk.size(), rec))
     throw std::runtime_error("compressSnapshot: dequantize failed");
+
+   // Back to the natural node order, so that the error, the statistics and the
+  // receiver value are computed on comparable arrays
+  if (!node_order_.empty())
+  {
+    std::vector<float> natural(n);
+    for (std::uint64_t k = 0; k < n; k++) natural[node_order_[k]] = rec[k];
+    rec.swap(natural);
+  }
   const cmp::ErrorStats err = cmp::compare(field.data(), rec.data(), n);
   
   // Statistics of a field (single pass, Welford), used to compare the original

@@ -25,6 +25,9 @@ class SemProxyOptions
   std::string insitu_compress = "none";  // part 2: compression
   std::string insitu_extra = "none";     // part 3: other processing
   std::string compress_file = "";  // CSV output of the compression ratios
+  // Order in which the nodes are traversed before compression:
+  // "natural" (mesh numbering) or "scan" (sorted by z, then y, then x)
+  std::string compress_order = "natural";
   std::string compress_bounds = "snapshot";  // snapshot | global
   float       compress_amax   = 0.f;         // borne fixe si bounds == global
   int stats_interval = 0;
@@ -132,7 +135,9 @@ class SemProxyOptions
         ("compress-amax", "Fixed max |p| used when compress-bounds=global",
           cxxopts::value<float>(o.compress_amax))
         ("compress-file", "Output CSV file for the in-situ compression ratios",
-          cxxopts::value<std::string>(o.compress_file));
+          cxxopts::value<std::string>(o.compress_file))
+        ("compress-order", "Node traversal order before compression: natural|scan",
+          cxxopts::value<std::string>(o.compress_order)->default_value("natural"));
 
  }  
 };
