@@ -28,6 +28,9 @@ class SemProxyOptions
   // Order in which the nodes are traversed before compression:
   // "natural" (mesh numbering) or "scan" (sorted by z, then y, then x)
   std::string compress_order = "natural";
+    // 1: do not write the CSV snapshots when compression is enabled (the
+  // compressed .cmp file replaces them); 0: write both
+  int compress_no_csv = 0;
   // Steering: control file re-read every steer_interval steps
   std::string steer_file = "";
   int steer_interval = 10;
@@ -141,7 +144,9 @@ class SemProxyOptions
           cxxopts::value<std::string>(o.compress_file))
         ("compress-order", "Node traversal order before compression: natural|scan",
           cxxopts::value<std::string>(o.compress_order)->default_value("natural"))
-        ("steer-file", "Steering control file, re-read during the run",
+        ("compress-no-csv", "1: replace the CSV snapshots by the compressed ones",
+          cxxopts::value<int>(o.compress_no_csv)->default_value("0"))        
+("steer-file", "Steering control file, re-read during the run",
           cxxopts::value<std::string>(o.steer_file))
         ("steer-interval", "Read the steering file every N time steps",
           cxxopts::value<int>(o.steer_interval)->default_value("10"));

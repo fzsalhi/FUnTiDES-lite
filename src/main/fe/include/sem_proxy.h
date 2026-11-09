@@ -121,7 +121,8 @@ class SEMproxy
   // on the first compressed snapshot, from the node coordinates.
   std::string compress_order_ = "natural";
   std::vector<int> node_order_;
-  
+    // True: the CSV snapshots are not written (replaced by the .cmp files)
+  bool compress_no_csv_ = false;
   // Steering (--insitu-extra steering): control file re-read every
   // steer_interval_ steps. See steerFromFile().
   std::string steer_file_;

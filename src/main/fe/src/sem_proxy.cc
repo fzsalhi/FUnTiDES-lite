@@ -88,6 +88,10 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     throw std::runtime_error("--steer-interval must be >= 1");
   if (opt.insitu_extra == "steering" && steer_file_.empty())
     throw std::runtime_error("--insitu-extra steering requires --steer-file");
+
+     compress_no_csv_ = (opt.compress_no_csv != 0);
+  if (compress_no_csv_ && opt.insitu_compress == "none")
+    throw std::runtime_error("--compress-no-csv requires --insitu-compress");
   // Node traversal order used before compression
   compress_order_ = opt.compress_order;
   if (compress_order_ != "natural" && compress_order_ != "scan" && compress_order_ != "scanz")
@@ -255,7 +259,7 @@ void SEMproxy::run()
       if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)         
     {
       startSaveTime = system_clock::now();
-      saveSnapshot(indexTimeSample);
+     if (!compress_no_csv_) saveSnapshot(indexTimeSample);
       totalSaveTime += system_clock::now() - startSaveTime;
     }
     // statistiques in situ : apres computeOneStep, i1 contient le champ le plus recent
@@ -998,7 +1002,7 @@ void SEMproxy::steerFromFile(int step)
   {
     std::cout << "[steering] step " << step << ": immediate snapshot"
               << std::endl;
-    saveSnapshot(step);
+    if (!compress_no_csv_) saveSnapshot(step);
     // the regular compression at this step (if any) is done by the hook
     if (insitu_compress_ != "none" && step % snap_time_interval_ != 0)
       compressSnapshot(step);
