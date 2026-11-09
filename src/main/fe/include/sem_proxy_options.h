@@ -28,6 +28,9 @@ class SemProxyOptions
   // Order in which the nodes are traversed before compression:
   // "natural" (mesh numbering) or "scan" (sorted by z, then y, then x)
   std::string compress_order = "natural";
+  // Steering: control file re-read every steer_interval steps
+  std::string steer_file = "";
+  int steer_interval = 10;
   std::string compress_bounds = "snapshot";  // snapshot | global
   float       compress_amax   = 0.f;         // borne fixe si bounds == global
   int stats_interval = 0;
@@ -137,7 +140,11 @@ class SemProxyOptions
         ("compress-file", "Output CSV file for the in-situ compression ratios",
           cxxopts::value<std::string>(o.compress_file))
         ("compress-order", "Node traversal order before compression: natural|scan",
-          cxxopts::value<std::string>(o.compress_order)->default_value("natural"));
+          cxxopts::value<std::string>(o.compress_order)->default_value("natural"))
+        ("steer-file", "Steering control file, re-read during the run",
+          cxxopts::value<std::string>(o.steer_file))
+        ("steer-interval", "Read the steering file every N time steps",
+          cxxopts::value<int>(o.steer_interval)->default_value("10"));
 
  }  
 };

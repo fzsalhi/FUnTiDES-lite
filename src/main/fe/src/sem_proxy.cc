@@ -80,6 +80,14 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   insitu_compress_ = opt.insitu_compress;
   insitu_extra_ = opt.insitu_extra;
 
+
+  // Steering options
+  steer_file_ = opt.steer_file;
+  steer_interval_ = opt.steer_interval;
+  if (steer_interval_ < 1)
+    throw std::runtime_error("--steer-interval must be >= 1");
+  if (opt.insitu_extra == "steering" && steer_file_.empty())
+    throw std::runtime_error("--insitu-extra steering requires --steer-file");
   // Node traversal order used before compression
   compress_order_ = opt.compress_order;
   if (compress_order_ != "natural" && compress_order_ != "scan" && compress_order_ != "scanz")
@@ -307,6 +315,17 @@ void SEMproxy::run()
        << endl;
   cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
        << endl;    
+  
+  
+  if (insitu_extra_ == "steering")
+  {
+    const double avgUs =
+        steer_reads_ > 0 ? 1000.0 * steer_total_ms_ / steer_reads_ : 0.0;
+    cout << "---- Steering : " << steer_reads_ << " reads (every "
+         << steer_interval_ << " steps), total " << steer_total_ms_
+         << " ms, average " << avgUs << " us per read." << endl;
+  }
+
     // final in-situ statistics of each seismogram
   if (stats_interval_ > 0)
     for (size_t r = 0; r < sismo_stats_.size(); r++)
@@ -542,8 +561,24 @@ void SEMproxy::saveSnapshot(int timestep)
     throw std::runtime_error("Impossible d'ouvrir le fichier snapshot CSV.");
   file << "x,y,z,pressure\n";
   file << std::setprecision(9);
+   // Steering: when a slice plane is active, keep only the nodes of the plane
+  // closest to the requested position. All the nodes of one plane share the
+  // same coordinate up to rounding, hence the small tolerance.
+  double sliceDist = 0.0;
+  if (slice_axis_ >= 0)
+  {
+    double dmin = std::numeric_limits<double>::max();
+    for (int n = 0; n < nbNodes; ++n)
+      dmin = std::min(dmin, std::abs(m_mesh->nodeCoord(n, slice_axis_) -
+                                     slice_value_));
+    sliceDist = dmin + 1e-5 * (1.0 + std::abs(slice_value_));
+  }
   for (int n = 0; n < nbNodes; ++n)
   {
+
+    if (slice_axis_ >= 0 &&
+        std::abs(m_mesh->nodeCoord(n, slice_axis_) - slice_value_) > sliceDist)
+      continue;
     file << m_mesh->nodeCoord(n, 0) << ','
          << m_mesh->nodeCoord(n, 1) << ','
          << m_mesh->nodeCoord(n, 2) << ','
@@ -777,6 +812,13 @@ bool SEMproxy::runInSituProcessing(int step)
 {
   (void)step;  // unused until the parts are implemented
 
+  // Steering is read first, so that its commands apply from this step on
+  if (insitu_extra_ == "steering")
+  {
+    if (step % steer_interval_ == 0) steerFromFile(step);
+    if (steer_stop_) return false;  // clean stop of the time loop
+  }
+
   // Part 1: in-situ visualization
   if (insitu_viz_ != "none")
   {
@@ -796,6 +838,120 @@ bool SEMproxy::runInSituProcessing(int step)
   }
 
   return true;  // returning false would request a clean stop
+}
+
+// Steering: read the control file and apply its commands. Format: one
+// "key=value" per line, '#' starts a comment. Supported keys:
+//   snap_interval=N    change the snapshot frequency (N >= 1)
+//   slice=AXIS:VALUE   restrict the CSV snapshots to the node plane closest to
+//                      AXIS=VALUE (AXIS is x, y or z); "slice=off" restores
+//                      full snapshots
+//   snapshot_now=N     write a snapshot now, each time the value N changes
+//   stop=1             request a clean stop of the time loop
+// The time spent reading the file is measured (steer_total_ms_); an immediate
+// snapshot is written after the timer has stopped, so it is not counted.
+void SEMproxy::steerFromFile(int step)
+{
+  const auto t0 = std::chrono::steady_clock::now();
+  bool snapNow = false;
+
+  auto trim = [](const std::string& s)
+  {
+    const char* ws = " \t\r\n";
+    const auto b = s.find_first_not_of(ws);
+    if (b == std::string::npos) return std::string();
+    const auto e = s.find_last_not_of(ws);
+    return s.substr(b, e - b + 1);
+  };
+
+  std::ifstream in(steer_file_);
+  if (in)
+  {
+    std::string line;
+    while (std::getline(in, line))
+    {
+      const auto hash = line.find('#');
+      if (hash != std::string::npos) line.erase(hash);
+      const auto eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      const std::string key = trim(line.substr(0, eq));
+      const std::string val = trim(line.substr(eq + 1));
+      try
+      {
+        if (key == "snap_interval")
+        {
+          const int v = std::stoi(val);
+          if (v >= 1 && v != snap_time_interval_)
+          {
+            std::cout << "[steering] step " << step << ": snapshot interval "
+                      << snap_time_interval_ << " -> " << v << std::endl;
+            snap_time_interval_ = v;
+          }
+        }
+        else if (key == "slice")
+        {
+          int axis = -1;
+          double value = 0.0;
+          if (val != "off")
+          {
+            if (val.size() < 3 || val[1] != ':')
+              throw std::invalid_argument("slice");
+            const char a = val[0];
+            axis = (a == 'x' || a == 'X') ? 0
+                 : (a == 'y' || a == 'Y') ? 1
+                 : (a == 'z' || a == 'Z') ? 2 : -1;
+            if (axis < 0) throw std::invalid_argument("slice axis");
+            value = std::stod(val.substr(2));
+          }
+          if (axis != slice_axis_ || (axis >= 0 && value != slice_value_))
+          {
+            std::cout << "[steering] step " << step << ": slice -> "
+                      << (axis < 0 ? std::string("off") : val) << std::endl;
+            slice_axis_ = axis;
+            slice_value_ = value;
+          }
+        }
+        else if (key == "snapshot_now")
+        {
+          const int v = std::stoi(val);
+          if (v != steer_last_now_)
+          {
+            steer_last_now_ = v;
+            snapNow = true;
+          }
+        }
+        else if (key == "stop")
+        {
+          if (std::stoi(val) == 1 && !steer_stop_)
+          {
+            std::cout << "[steering] step " << step << ": clean stop requested"
+                      << std::endl;
+            steer_stop_ = true;
+          }
+        }
+      }
+      catch (const std::exception&)
+      {
+        std::cerr << "[steering] ignored invalid line: " << key << "=" << val
+                  << std::endl;
+      }
+    }
+  }
+
+  steer_total_ms_ += std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - t0)
+                         .count();
+  steer_reads_++;
+
+  if (snapNow)
+  {
+    std::cout << "[steering] step " << step << ": immediate snapshot"
+              << std::endl;
+    saveSnapshot(step);
+    // the regular compression at this step (if any) is done by the hook
+    if (insitu_compress_ != "none" && step % snap_time_interval_ != 0)
+      compressSnapshot(step);
+  }
 }
 // Compress the newest pressure field (column i1) with the pipeline given by
 // --insitu-compress: quantize (raw, f16, int8, int16), then RLE if requested.

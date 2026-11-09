@@ -121,6 +121,17 @@ class SEMproxy
   // on the first compressed snapshot, from the node coordinates.
   std::string compress_order_ = "natural";
   std::vector<int> node_order_;
+  
+  // Steering (--insitu-extra steering): control file re-read every
+  // steer_interval_ steps. See steerFromFile().
+  std::string steer_file_;
+  int steer_interval_ = 10;
+  int steer_last_now_ = 0;        // last seen value of snapshot_now
+  bool steer_stop_ = false;       // clean stop requested
+  int slice_axis_ = -1;           // -1: full snapshot, else 0/1/2 = x/y/z
+  double slice_value_ = 0.0;      // position of the slice plane
+  double steer_total_ms_ = 0.0;   // time spent reading the control file
+  long steer_reads_ = 0;          // number of reads
   // CSV output of the compression ratios (one row per compressed snapshot)
   std::ofstream compress_out_;
   // Compress the newest pressure field (column i1) with the pipeline given by
@@ -129,6 +140,9 @@ class SEMproxy
   void compressSnapshot(int step);
   // Returns false to request a clean stop of the simulation.
   bool runInSituProcessing(int step);
+  // Read the steering control file and apply its commands (snapshot interval,
+  // slice plane, immediate snapshot, clean stop). Timed: see steer_total_ms_.
+  void steerFromFile(int step);
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;
   int stats_count_ = 0;
