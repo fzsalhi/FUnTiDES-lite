@@ -78,23 +78,28 @@ python3 scripts/benchmarks/bench_tp3_compress.py --sizes M --runs 3 \
   --configs baseline,raw+rle,int16+rle,int8+rle,steer_k10 --output stats/tp3/bench_compress/M
 ```
 
-Maillages : S = 20³, M = 40³ éléments (ordre 2), `--timemax 0.5`, un snapshot tous les 50 pas (10 snapshots), 4 threads OpenMP, CPU. Les résultats bruts sont dans `stats/tp3/bench_compress/{S,M}/`.
+```bash
+python3 scripts/benchmarks/bench_tp3_compress.py --sizes L --runs 3 \
+  --configs baseline,raw+rle,int16+rle,int8+rle,int8+rle_nocsv,steer_k10 --output stats/tp3/bench_compress/L
+```
+
+Maillages : S = 20³, M = 40³, L = 50³ éléments (ordre 2), `--timemax 0.5` (500 pas), un snapshot tous les 50 pas (10 snapshots), 4 threads OpenMP, CPU. S : 5 répétitions ; M et L : 3 répétitions (1 warm-up ignoré, médiane). Les résultats bruts sont dans `stats/tp3/bench_compress/{S,M,L}/`.
 
 ## 5. Résultats
 
 ### 5.1 Compression des snapshots (médianes, maillage S puis M)
 
-Taille de référence : CSV complet de 10 snapshots = 18,4 Mo (S) et 124,7 Mo (M).
+Taille de référence : CSV complet de 10 snapshots = 18,4 Mo (S), 124,7 Mo (M) et 227,9 Mo (L).
 
-| Config | Ratio (brut/stocké) | Stocké S | rmse_norm max | var. relative max |
+| Config | Ratio (brut/stocké) S / M / L | Stocké S | rmse_norm max (S) | var. relative max (S) |
 |---|---|---|---|---|
-| raw+rle | 0,59 (S) / 0,82 (M) | 4,69 Mo | 0 | 0 |
-| f16+rle | 2,05 | 1,34 Mo | 3,2e-5 | 4,2e-3 |
-| int16+rle | 15,0 (S) / 18,4 (M) | 184 Ko | 4,5e-6 | 1,9e-5 |
-| int8+rle | 56,4 (S) / 60,3 (M) | 49 Ko | 8,4e-4 | 8,2e-3 |
-| int8+delta+rle | 55,0 | 50 Ko | 8,4e-4 | 8,2e-3 |
+| raw+rle | 0,59 / 0,82 / 0,98 | 4,69 Mo | 0 | 0 |
+| f16+rle | 2,05 / n/m / n/m | 1,34 Mo | 3,2e-5 | 4,2e-3 |
+| int16+rle | 15,0 / 18,4 / 19,0 | 184 Ko | 4,5e-6 | 1,9e-5 |
+| int8+rle | 56,4 / 60,3 / 62,4 | 49 Ko | 8,4e-4 | 8,2e-3 |
+| int8+delta+rle | 55,0 / n/m / n/m | 50 Ko | 8,4e-4 | 8,2e-3 |
 
-Sur M : int8+rle stocke 353 Ko (contre 124,7 Mo de CSV, soit environ 350 fois moins), int16+rle 1,15 Mo (environ 108 fois moins).
+(n/m : non mesuré.) Sur M, int8+rle stocke 353 Ko (contre 124,7 Mo de CSV, environ 350 fois moins) et int16+rle 1,15 Mo (environ 108 fois moins). Sur L : int8+rle 661 Ko (environ 345 fois moins que 227,9 Mo), int16+rle 2,17 Mo (environ 105 fois moins), raw+rle 42,1 Mo. Les erreurs restent les mêmes d'une taille à l'autre : int16 ≈ 4e-6 (variance ≤ 1,7e-5), int8 ≈ 9e-4 (variance ≤ 3,2e-3 en M et en L).
 
 ### 5.2 Ratio par snapshot et propagation de l'onde
 
@@ -122,28 +127,29 @@ Avec `raw+rle` (sans perte), le ratio d'un snapshot de S vaut **114 au step 0** 
 | int8+rle | 5,17 | 1,6e-3 | 5,64 | 1,5e-3 |
 | int8+delta+rle | 8,18 | 1,6e-3 | n/m | n/m |
 
-(n/m : non mesuré.) Le RLE sans perte est inutile sur ce signal : le récepteur voit l'onde presque tout de suite (dans un run court de 200 échantillons, seuls 4 échantillons sont nuls au début), donc il n'y a quasiment pas de plage d'octets identiques. Les 40 octets d'en-tête pèsent environ 2 % d'une trace de 500 échantillons (2 000 octets).
+Sur L : raw+rle 0,51 (erreur 0), int16+rle 1,82 (6,7e-6), int8+rle 5,67 (1,5e-3). (n/m : non mesuré.) Le RLE sans perte est inutile sur ce signal : le récepteur voit l'onde presque tout de suite (dans un run court de 200 échantillons, seuls 4 échantillons sont nuls au début), donc il n'y a quasiment pas de plage d'octets identiques. Les 40 octets d'en-tête pèsent environ 2 % d'une trace de 500 échantillons (2 000 octets).
 
 ### 5.6 Surcoût et gain d'E/S
 
-| | S (20³) | M (40³) |
-|---|---|---|
-| Kernel Time (référence) | 7,44 s | 67,5 s |
-| Kernel Time avec compression ou steering | 7,44 s | 67,4 – 67,5 s |
-| Output Time, référence (CSV seul) | 1,55 s | 12,18 s |
-| Output Time, CSV + `.cmp` (int8+rle) | 1,58 s | 12,47 s |
-| Output Time, `.cmp` seul (`--compress-no-csv 1`) | **0,035 s** | **0,28 s** |
+| | S (20³) | M (40³) | L (50³) |
+|---|---|---|---|
+| Kernel Time (référence) | 7,44 s | 67,5 s | 127,1 s |
+| Kernel Time avec compression ou steering | 7,44 s | 67,4 – 67,5 s | 127,1 – 127,3 s |
+| Output Time, référence (CSV seul) | 1,55 s | 12,18 s | 22,67 s |
+| Output Time, CSV + `.cmp` (int8+rle) | 1,58 s | 12,47 s | 23,19 s |
+| Output Time, `.cmp` seul (`--compress-no-csv 1`) | **0,035 s** | **0,28 s** | **0,51 s** |
 
-- La compression ne modifie pas le temps de calcul. Avec le CSV conservé en plus, l'Output Time augmente de 2 à 3 % (contrôle d'erreur compris).
-- En **remplaçant** le CSV par le snapshot compressé, l'Output Time est divisé par environ **45** (S) et **43** (M), et le volume sur disque passe de 18 Mo à 49 Ko (S).
-- Temps de compression seul : environ 1 ms par snapshot en S, 9–12 ms en M ; écriture du `.cmp` : environ 0,05 ms (S) et 0,1–0,2 ms (M) par snapshot pour int8/int16.
+- La compression ne modifie pas le temps de calcul. Avec le CSV conservé en plus, l'Output Time augmente de 2 à 3 % (contrôle d'erreur compris : +0,26 à +0,39 s en M, +0,48 à +0,68 s en L).
+- En **remplaçant** le CSV par le snapshot compressé, l'Output Time est divisé par environ **45** (S), **43** (M) et **44** (L), et le volume sur disque passe de 18 Mo à 49 Ko (S) et de 228 Mo à 661 Ko (L). Les valeurs S et M ont été relevées à la main (3 exécutions chacune) ; celle de L vient du benchmark (`int8+rle_nocsv`).
+- Temps de compression seul : environ 1 ms par snapshot en S, 9–12 ms en M, 17–20 ms en L ; écriture du `.cmp` : environ 0,05 ms (S), 0,1–0,2 ms (M) et 0,15–0,3 ms (L) par snapshot pour int8/int16. Pour raw+rle, l'écriture de 4 Mo (S) à 42 Mo (L) coûte de 0,35 ms à 2,7 ms par snapshot.
+- Le Kernel Time est identique d'une configuration à l'autre. Il croît avec le maillage : × 9,1 de S à M (7,7 fois plus de nœuds) et × 1,9 de M à L (1,9 fois plus de nœuds).
 
 ### 5.7 Coût du steering
 
 | Intervalle `k` | Lectures (S) | Temps total | Coût par lecture |
 |---|---|---|---|
 | 1 | 499 | 5,1 ms | 10 µs |
-| 10 | 50 | 0,64 ms (1,5 ms en M) | 13 – 30 µs |
+| 10 | 50 | 0,64 ms (1,5 ms en M et en L) | 13 – 30 µs |
 | 100 | 5 | 0,12 ms | 25 µs |
 
 Le coût décroît en 1/k et reste inférieur à 0,1 % du Kernel Time même avec `k = 1`. Le plan de coupe (`slice=z:...`) réduit les snapshots de 531 442 lignes à 6 562 (81 × 81 nœuds) et le temps de sortie d'un facteur d'environ 8 (mesuré sur M, 40³, `--timemax 0.2`, un snapshot tous les 20 pas : 11,9 s → 1,46 s).

@@ -18,6 +18,7 @@ from pathlib import Path
 SIZES = {"S": 20, "M": 40, "L": 50}
 COMPRESS = ["raw+rle", "f16+rle", "int16+rle", "int8+rle", "int8+delta+rle"]
 STEER_K = [1, 10, 100]
+NOCSV = "int8+rle_nocsv"  # int8+rle, compressed snapshots replace the CSV
 
 RE_KERNEL = re.compile(r"Elapsed Kernel Time : ([0-9.eE+-]+)")
 RE_OUTPUT = re.compile(r"Elapsed Output Time : ([0-9.eE+-]+)")
@@ -57,8 +58,11 @@ def run_one(exe, n, config, work, timemax, interval, threads):
     cmd = [str(exe), "--ex", str(n), "--ey", str(n), "--ez", str(n),
            "--timemax", str(timemax), "--is-snapshots", "1",
            "--snap-time-interval", str(interval), "--snap-folder", str(snap)]
-    if config in COMPRESS:
-        cmd += ["--insitu-compress", config, "--compress-file", str(cmp_csv)]
+    if config in COMPRESS or config == NOCSV:
+        mode = "int8+rle" if config == NOCSV else config
+        cmd += ["--insitu-compress", mode, "--compress-file", str(cmp_csv)]
+        if config == NOCSV:
+            cmd += ["--compress-no-csv", "1"]
     if config.startswith("steer_k"):
         ctl.write_text(f"snap_interval={interval}\n")
         cmd += ["--insitu-extra", "steering", "--steer-file", str(ctl),
@@ -71,7 +75,7 @@ def run_one(exe, n, config, work, timemax, interval, threads):
 
     m = {"kernel_s": float(RE_KERNEL.search(text).group(1)),
          "output_s": float(RE_OUTPUT.search(text).group(1))}
-    if config in COMPRESS:
+    if config in COMPRESS or config == NOCSV:
         c = read_compress(cmp_csv)
         m.update(snap_ratio=c["raw"] / c["stored"], stored_bytes=c["stored"],
                  csv_bytes=c["csv_bytes"], compress_ms=c["comp_ms"],
