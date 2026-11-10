@@ -49,6 +49,7 @@ struct StreamStats
 class SEMproxy
 {
  public:
+ std::ofstream compress_out_;
   /**
    * @brief Constructor of the SEMproxy class
    */
@@ -99,6 +100,7 @@ class SEMproxy
  private:
   int i1 = 0;
   int i2 = 1;
+  CompressConfig compress_cfg_;
   // proper to cartesian mesh
   // or any structured mesh
   int nb_elements_[3] = {0};
@@ -115,7 +117,6 @@ class SEMproxy
   std::string insitu_viz_;
   std::string insitu_compress_;
   std::string insitu_extra_;
-  CompressConfig compress_cfg_;
   // Node traversal order used before compression ("natural" or "scan").
   // node_order_[k] = index of the node stored at position k; it is built once,
   // on the first compressed snapshot, from the node coordinates.
@@ -133,8 +134,6 @@ class SEMproxy
   double slice_value_ = 0.0;      // position of the slice plane
   double steer_total_ms_ = 0.0;   // time spent reading the control file
   long steer_reads_ = 0;          // number of reads
-  // CSV output of the compression ratios (one row per compressed snapshot)
-  std::ofstream compress_out_;
   // Compress the newest pressure field (column i1) with the pipeline given by
   // --insitu-compress (quantize, then RLE if requested) and log size/time in
   // the compression CSV. Called at snapshot steps from runInSituProcessing().

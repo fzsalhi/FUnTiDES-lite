@@ -138,7 +138,11 @@ inline std::size_t delta_width(const Header& h)
   {
     case Mode::Raw:  return 4;
     case Mode::F16:  return 2;
-    case Mode::IntN: return h.nbits / 8;
+    case Mode::IntN:
+      // 8 and 16 bits: int8_t / int16_t elements. Other widths (2..15) are
+      // packed bit by bit by quantize(): there is no element boundary, so the
+      // delta is done byte by byte (still exactly reversible, modulo 2^8).
+      return (h.nbits == 16) ? 2 : 1;
   }
   return 0;
 }

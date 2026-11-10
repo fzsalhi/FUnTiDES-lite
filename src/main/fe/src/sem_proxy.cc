@@ -21,7 +21,10 @@
 #include <fstream>
 #include <vector>
 #include <limits>
+#include "compression_gpu.hpp"
+#include "compression.hpp"
 #include "rle.hpp"
+#include <cmath>
 #include <algorithm>
 #include <numeric>
 #ifdef SEMPROXY_ENABLE_CUFFT
@@ -78,6 +81,9 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   // TP3 in-situ processing modes (each owner validates its own values later)
   insitu_viz_ = opt.insitu_viz;
   insitu_compress_ = opt.insitu_compress;
+  std::string err;
+  if (!parse_compress(insitu_compress_, compress_cfg_, err))
+    throw std::runtime_error("--insitu-compress: " + err);
   insitu_extra_ = opt.insitu_extra;
 
 
@@ -105,8 +111,11 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     if (!parse_compress(insitu_compress_, compress_cfg_, err))
       throw std::runtime_error(err);
   }
-    // CSV of the compression ratios, only when a file name is given
-  if (compress_cfg_.enabled && !opt.compress_file.empty())
+   // CSV of the compression ratios of compressSnapshot(), only when a file name
+  // is given and a lossless stage (RLE / DELTA) is requested. The other
+  // configurations go through the quantization block, which writes its own CSV.
+  if (compress_cfg_.enabled && (compress_cfg_.rle || compress_cfg_.delta) &&
+      !opt.compress_file.empty())
   {
     compress_out_.open(opt.compress_file);
     if (!compress_out_)
@@ -827,14 +836,145 @@ bool SEMproxy::runInSituProcessing(int step)
   // Part 1: in-situ visualization
   if (insitu_viz_ != "none")
   {
+
   }
 
   // Part 2: compression
   if (insitu_compress_ != "none")
   {
-     // Compress at the same steps as the snapshots (validate() requires
-    // --is-snapshots whenever compression is enabled)
-    if (step % snap_time_interval_ == 0) compressSnapshot(step);
+    // Lossless stages (RLE / DELTA): CPU pipeline of compressSnapshot()
+    if (compress_cfg_.rle || compress_cfg_.delta)
+    {
+      if (step % snap_time_interval_ == 0) compressSnapshot(step);
+    }
+    // Quantization only (optionally on the GPU): global bounds,
+    // validation, .cpm files
+    else if (compress_cfg_.enabled && is_snapshots_ &&
+             step % snap_time_interval_ == 0)
+    {
+      using Clock = std::chrono::steady_clock;
+      const int nbNodes = m_mesh->getNumberOfNodes();
+      const std::size_t rawBytes =
+          static_cast<std::size_t>(nbNodes) * sizeof(float);
+      // 0 -> bornes par snapshot ; > 0 -> bornes globales
+      const float amaxFixed =
+          compress_cfg_.global_bounds ? compress_cfg_.amax : 0.0f;
+
+      std::vector<uint8_t> buf;
+      double quantMs = 0.0;       // calcul de la quantification
+      double copyMs = 0.0;        // transfert GPU -> hote (de ce que l'hote lit pour quantifier)
+      uint64_t clipped = 0;       // valeurs saturees (bornes globales trop petites)
+      float amaxUsed = 0.0f;
+      std::size_t hostBytes = 0;  // octets lus par l'hote depuis le GPU
+
+      Kokkos::fence();
+
+      // ---- quantification sur le GPU : l'hote ne lit que 1 ou 2 octets/noeud
+      if (compress_cfg_.gpu)
+      {
+        cmp_gpu::Timings tm;
+        if (!cmp_gpu::quantize_gpu(pnGlobal, i2, nbNodes, compress_cfg_.nbits,
+                                   step, amaxFixed, buf, clipped, amaxUsed, tm))
+          throw std::runtime_error("quantize_gpu a echoue");
+        quantMs = tm.reduce_ms + tm.quant_ms;
+        copyMs = tm.copy_ms;
+        hostBytes = static_cast<std::size_t>(nbNodes) * (compress_cfg_.nbits / 8);
+      }
+
+      // ---- copie de la colonne float sur l'hote : necessaire pour la version
+      // CPU, pour la validation (compare) et pour le test octet par octet.
+      // Elle n'est comptee dans copyMs/hostBytes que pour la version CPU.
+      const bool needHostCol =
+          !compress_cfg_.gpu || compress_cfg_.validate || compress_cfg_.check;
+      Kokkos::View<float*, Layout, Kokkos::HostSpace> col;
+      if (needHostCol)
+      {
+        col = Kokkos::View<float*, Layout, Kokkos::HostSpace>("cpmCol", nbNodes);
+        Kokkos::fence();
+        const auto c0 = Clock::now();
+        Kokkos::deep_copy(col, Kokkos::subview(pnGlobal, Kokkos::ALL, i2));
+        const auto c1 = Clock::now();
+        if (!compress_cfg_.gpu)
+        {
+          copyMs = std::chrono::duration<double, std::milli>(c1 - c0).count();
+          hostBytes = rawBytes;
+        }
+      }
+
+      // ---- quantification sur le CPU
+      if (!compress_cfg_.gpu)
+      {
+        const auto t0 = Clock::now();
+        if (!cmp::quantize(col.data(), nbNodes, compress_cfg_.mode,
+                           compress_cfg_.nbits, step, buf, amaxFixed, &clipped,
+                           &amaxUsed))
+          throw std::runtime_error("quantize a echoue");
+        quantMs = std::chrono::duration<double, std::milli>(Clock::now() - t0)
+                      .count();
+      }
+
+      // ---- verification : sortie GPU == sortie CPU, octet par octet
+      int identical = -1;  // -1 = non verifie
+      if (compress_cfg_.gpu && compress_cfg_.check)
+      {
+        std::vector<uint8_t> ref;
+        if (!cmp::quantize(col.data(), nbNodes, cmp::Mode::IntN,
+                           compress_cfg_.nbits, step, ref, amaxFixed))
+          throw std::runtime_error("quantize CPU (verification) a echoue");
+        identical = (ref == buf) ? 1 : 0;
+        if (!identical)
+        {
+          std::size_t k = 0;
+          while (k < ref.size() && k < buf.size() && ref[k] == buf[k]) ++k;
+          std::cerr << "[compress] ATTENTION: GPU != CPU au pas " << step
+                    << " (tailles " << buf.size() << " / " << ref.size()
+                    << ", premier octet different : " << k << ")\n";
+        }
+      }
+
+      if (clipped > 0)
+        std::cerr << "[compress] ATTENTION: " << clipped
+                  << " valeurs saturees au pas " << step << " (amax=" << amaxUsed
+                  << " trop petit ?)\n";
+
+      // ---- ecriture du .cpm
+      std::filesystem::create_directories(snap_folder_ + "/compressed");
+      char name[256];
+      snprintf(name, sizeof(name), "%s/compressed/snapshot_it_%06d.cpm",
+               snap_folder_.c_str(), step);
+      std::ofstream f(name, std::ios::binary);
+      f.write(reinterpret_cast<const char*>(buf.data()), buf.size());
+
+      // ---- validation : on reconstruit et on mesure l'erreur
+      // (desactivable avec +novalid pour mesurer le cout de la compression seule)
+      double rmse = std::nan(""), maxAbs = std::nan("");
+      if (compress_cfg_.validate)
+      {
+        std::vector<float> rec;
+        if (!cmp::dequantize(buf.data(), buf.size(), rec))
+          throw std::runtime_error("dequantize a echoue");
+        const cmp::ErrorStats e = cmp::compare(col.data(), rec.data(), nbNodes);
+        rmse = e.rmse_norm;
+        maxAbs = e.max_abs_norm;
+      }
+
+      if (!compress_out_.is_open())
+      {
+        compress_out_.open(snap_folder_ + "/compress_stats.csv");
+        compress_out_ << std::setprecision(9);
+        compress_out_ << "step,mode,n_nodes,bytes_raw,bytes_cpm,ratio,"
+                         "rmse_norm,max_abs_norm,quantize_ms,"
+                         "copy_ms,bounds,amax,n_clipped,host_bytes,impl,identical\n";
+      }
+      compress_out_ << step << ',' << insitu_compress_ << ',' << nbNodes << ','
+                    << rawBytes << ',' << buf.size() << ','
+                    << cmp::ratio(rawBytes, buf.size()) << ',' << rmse << ','
+                    << maxAbs << ',' << quantMs << ',' << copyMs << ','
+                    << (compress_cfg_.global_bounds ? "global" : "snapshot")
+                    << ',' << amaxUsed << ',' << clipped << ',' << hostBytes
+                    << ',' << (compress_cfg_.gpu ? "gpu" : "cpu") << ','
+                    << identical << '\n';
+    }
   }
 
   // Part 3: other processing (steering, driven outputs, accumulated maps)
