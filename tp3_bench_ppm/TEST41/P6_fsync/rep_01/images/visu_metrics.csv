@@ -1,0 +1,11 @@
+step,plane,format,width,height,size_bytes,extract_ms,color_ms,encode_ms,write_ms,fsync_ms,output_total_ms,frame_total_ms,fsync_enabled,path
+0,XY,P6,256,256,196623,0.871527,1.61814,0.033733,0.394706,3.299378,3.820587,6.316659,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000000_P6.ppm
+50,XY,P6,256,256,196623,0.542729,1.616955,0.02003,0.580553,3.692681,4.350928,6.516068,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000050_P6.ppm
+100,XY,P6,256,256,196623,0.567677,1.113811,0.025102,0.357936,3.132711,3.560601,5.246616,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000100_P6.ppm
+150,XY,P6,256,256,196623,0.805919,1.663334,0.032811,0.396309,5.136181,5.620217,8.095416,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000150_P6.ppm
+200,XY,P6,256,256,196623,0.610122,1.087198,0.028832,0.391732,4.34741,4.81712,6.519602,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000200_P6.ppm
+250,XY,P6,256,256,196623,0.63843,2.057051,0.037483,0.840145,3.425734,4.364043,7.078547,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000250_P6.ppm
+300,XY,P6,256,256,196623,0.526168,1.035401,0.02694,0.312358,4.679264,5.064929,6.631906,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000300_P6.ppm
+350,XY,P6,256,256,196623,0.625015,1.575686,0.033523,0.417464,4.629131,5.132641,7.347687,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000350_P6.ppm
+400,XY,P6,256,256,196623,0.591945,1.357935,0.02761,0.328338,4.292286,4.710839,6.665851,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000400_P6.ppm
+450,XY,P6,256,256,196623,0.656678,1.233497,0.027813,0.37004,5.02406,5.468713,7.363474,1,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_fsync/rep_01/images/slice_XY_it_000450_P6.ppm

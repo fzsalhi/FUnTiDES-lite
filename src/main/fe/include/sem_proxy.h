@@ -17,8 +17,11 @@
 #include <vector>
 #include <fstream>
 #include <limits>
+#include <cmath>
+#include <array>
 #include "sem_proxy_options.h"
 #include "compression_config.hpp"
+#include "tp3_slice_cpu.hpp"
 
 /* Streaming statistics (Welford's algorithm): constant memory*/
 
@@ -146,6 +149,18 @@ class SEMproxy
   // Read the steering control file and apply its commands (snapshot interval,
   // slice plane, immediate snapshot, clean stop). Timed: see steer_total_ms_.
   void steerFromFile(int step);
+  std::string visu_plane_;
+  float visu_position_;
+  int visu_width_;
+  int visu_height_;
+  std::string visu_format_;
+  int visu_interval_;
+  std::string visu_folder_;
+  float visu_scale_;
+  bool visu_fsync_ = false;
+
+  std::unique_ptr<TP3SliceCPU> visu_slice_;
+  void savePPMSlice(int step, int column);
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;
   int stats_count_ = 0;

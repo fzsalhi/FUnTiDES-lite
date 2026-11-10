@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include "compression_config.hpp"
+#include <cmath>
 
 class SemProxyOptions
 {
@@ -37,7 +38,7 @@ class SemProxyOptions
   std::string compress_bounds = "snapshot";  // snapshot | global
   float       compress_amax   = 0.f;         // borne fixe si bounds == global
   int stats_interval = 0;
-  std::string sismo_file = "sismos.csv";
+  std::string sismo_file = "";
   std::string implem = "makutu";  // makutu|shiva
   std::string method = "sem";     // sem|dg
   std::string mesh = "cartesian";
@@ -54,24 +55,77 @@ class SemProxyOptions
   bool is_snapshots = false;
   int snap_time_interval = 50;
   std::string snap_folder = "../data";
+  std::string visu_plane = "XY";
+  float visu_position = 0.5f;
+  int visu_width = 256;
+  int visu_height = 256;
+  std::string visu_format = "both";
+  int visu_interval = 50;
+  std::string visu_folder = "tp3_images";
+  float visu_scale = 0.0f;
+  bool visu_fsync = false;
   void validate() const
+{
+  if (order < 1)
+    throw std::runtime_error("order must be >= 1");
+
+  if (ex <= 0 || ey <= 0 || ez <= 0)
+    throw std::runtime_error("ex/ey/ez must be > 0");
+
+  if (lx <= 0 || ly <= 0 || lz <= 0)
+    throw std::runtime_error("lx/ly/lz must be > 0");
+
+  if (is_snapshots && snap_time_interval <= 0)
+    throw std::runtime_error("snap-time-interval must be > 0");
+
+  CompressConfig cc;
+  std::string err;
+
+  if (!parse_compress(insitu_compress, cc, err))
+    throw std::runtime_error(err);
+
+  if (compress_bounds != "snapshot" && compress_bounds != "global")
+    throw std::runtime_error("compress-bounds must be snapshot|global");
+
+  if (compress_bounds == "global" && compress_amax <= 0.f)
+    throw std::runtime_error("compress-amax must be > 0 with global bounds");
+
+  if (cc.enabled && !is_snapshots)
+    throw std::runtime_error("insitu-compress requires --is-snapshots");
+
+  if (insitu_viz == "ppm")
   {
-    if (order < 1) throw std::runtime_error("order must be >= 1");
-    if (ex <= 0 || ey <= 0 || ez <= 0)
-      throw std::runtime_error("ex/ey/ez must be > 0");
-    if (lx <= 0 || ly <= 0 || lz <= 0)
-      throw std::runtime_error("lx/ly/lz must be > 0");
-    if (is_snapshots && snap_time_interval <= 0)
-      throw std::runtime_error("snap-time-interval must be > 0");
-    CompressConfig cc; std::string err;
-    if (!parse_compress(insitu_compress, cc, err)) throw std::runtime_error(err);
-    if (compress_bounds != "snapshot" && compress_bounds != "global")
-      throw std::runtime_error("compress-bounds must be snapshot|global");
-    if (compress_bounds == "global" && compress_amax <= 0.f)
-      throw std::runtime_error("compress-amax must be > 0 with global bounds");
-    if (cc.enabled && !is_snapshots)
-      throw std::runtime_error("insitu-compress requires --is-snapshots");
+    if (mesh != "cartesian")
+      throw std::runtime_error("PPM visualization requires cartesian mesh");
+
+    if (visu_plane != "XY" &&
+        visu_plane != "XZ" &&
+        visu_plane != "YZ")
+      throw std::runtime_error("Invalid visualization plane");
+
+    if (!std::isfinite(visu_position) ||
+        visu_position < 0.0f ||
+        visu_position > 1.0f)
+      throw std::runtime_error("Invalid slice position");
+
+    if (visu_width < 2 || visu_height < 2)
+      throw std::runtime_error("Invalid image dimensions");
+
+    if (visu_interval <= 0)
+      throw std::runtime_error("Invalid visualization interval");
+
+    if (visu_format != "P3" &&
+        visu_format != "P6" &&
+        visu_format != "both")
+      throw std::runtime_error("Invalid PPM format");
+
+    if (!std::isfinite(visu_scale) || visu_scale < 0.0f)
+      throw std::runtime_error("Invalid visualization scale");
+
+    if (visu_folder.empty())
+      throw std::runtime_error("Invalid visualization folder");
   }
+}
   // Bind CLI flags to this instance (no --help here)
   static void bind_cli(cxxopts::Options& opts, SemProxyOptions& o)
   {
@@ -151,5 +205,24 @@ class SemProxyOptions
         ("steer-interval", "Read the steering file every N time steps",
           cxxopts::value<int>(o.steer_interval)->default_value("10"));
 
- }  
+    opts.add_options()
+    ("visu-plane", "Slice plane: XY, XZ or YZ",
+        cxxopts::value<std::string>(o.visu_plane))
+    ("visu-position", "Relative slice position",
+        cxxopts::value<float>(o.visu_position))
+    ("visu-width", "Image width",
+        cxxopts::value<int>(o.visu_width))
+    ("visu-height", "Image height",
+        cxxopts::value<int>(o.visu_height))
+    ("visu-format", "PPM format: P3, P6 or both",
+        cxxopts::value<std::string>(o.visu_format))
+    ("visu-interval", "Visualization interval",
+        cxxopts::value<int>(o.visu_interval))
+    ("visu-folder", "Output directory",
+        cxxopts::value<std::string>(o.visu_folder))
+    ("visu-scale", "Fixed symmetric pressure scale (0 = automatic)",
+        cxxopts::value<float>(o.visu_scale))
+    ("visu-fsync", "Force fsync on each PPM output",
+        cxxopts::value<bool>(o.visu_fsync));
+    }
 };
