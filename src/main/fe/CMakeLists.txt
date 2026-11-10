@@ -6,6 +6,8 @@ if(COMPILE_SEM)
   add_executable(semproxy
     src/main.cc
     src/sem_proxy.cc
+    src/tp3_ppm_visu.cc
+    src/tp3_slice_cpu.cc
   )
   if(SEMPROXY_ENABLE_CUFFT)
     find_package(CUDAToolkit REQUIRED)

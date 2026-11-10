@@ -1,0 +1,11 @@
+step,plane,format,width,height,size_bytes,extract_ms,color_ms,encode_ms,write_ms,fsync_ms,output_total_ms,frame_total_ms,fsync_enabled,path
+0,XY,P6,256,256,196623,0.922596,1.682733,0.04897,0.403459,0,0.482138,3.092087,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000000_P6.ppm
+50,XY,P6,256,256,196623,0.502042,1.232651,0.027516,0.388103,0,0.450334,2.189326,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000050_P6.ppm
+100,XY,P6,256,256,196623,0.543665,1.490745,0.032158,0.324272,0,0.410737,2.450168,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000100_P6.ppm
+150,XY,P6,256,256,196623,0.575616,1.242769,0.058125,0.637529,0,0.721791,2.544735,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000150_P6.ppm
+200,XY,P6,256,256,196623,0.677854,1.157183,0.040193,0.320517,0,0.381125,2.220064,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000200_P6.ppm
+250,XY,P6,256,256,196623,0.768071,1.566992,0.027897,0.371321,0,0.424763,2.764576,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000250_P6.ppm
+300,XY,P6,256,256,196623,0.964339,2.15986,0.038786,0.52269,0,0.592527,3.730614,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000300_P6.ppm
+350,XY,P6,256,256,196623,0.62247,1.394907,0.026501,0.420005,0,0.47323,2.495313,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000350_P6.ppm
+400,XY,P6,256,256,196623,0.539113,0.933871,0.02548,0.325501,0,0.372822,1.849445,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000400_P6.ppm
+450,XY,P6,256,256,196623,1.005635,1.870399,0.038095,0.528657,0,0.601894,3.492801,0,/home/wiam/traitement_in_situ/FUnTiDES-lite/tp3_bench_ppm/TEST41/P6_cache/rep_02/images/slice_XY_it_000450_P6.ppm
