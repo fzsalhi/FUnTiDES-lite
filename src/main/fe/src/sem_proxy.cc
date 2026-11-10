@@ -766,27 +766,6 @@ bool SEMproxy::runInSituProcessing(int step)
   // Part 2: compression
   if (insitu_compress_ != "none")
   {
-// =====================================================================
-// A COLLER dans sem_proxy.cc
-//
-// 1) en haut du fichier, a cote de  #include "compression.hpp" :
-//        #include "compression_gpu.hpp"
-//
-// 2) dans SEMproxy::runInSituProcessing, REMPLACER tout le contenu du bloc
-//        if (insitu_compress_ != "none") { ... }
-//    (y compris le "// Part 2: compression" en double) par ce qui suit.
-//    Le reste de la fonction (Part 1, Part 3, return true) ne change pas.
-//
-// Options (dans la chaine --insitu-compress, voir compression_config.hpp) :
-//    int8   int16   f16                  CPU, bornes par snapshot (comme avant)
-//    int8+gpu                            quantification sur le GPU
-//    int8+gpu+check                      + verification octet par octet vs CPU
-//    int8+global=0.26                    bornes globales (amax fixe)
-//    int8+gpu+global=0.26+novalid        mesure de cout : sans dequantize/compare
-// =====================================================================
-  // Part 2: compression
-  if (insitu_compress_ != "none")
-  {
     if (compress_cfg_.enabled && is_snapshots_ && step % snap_time_interval_ == 0)
     {
       using Clock = std::chrono::steady_clock;
@@ -912,7 +891,6 @@ bool SEMproxy::runInSituProcessing(int step)
                     << ',' << (compress_cfg_.gpu ? "gpu" : "cpu") << ','
                     << identical << '\n';
     }
-  }
   }
 
   // Part 3: other processing (steering, driven outputs, accumulated maps)
