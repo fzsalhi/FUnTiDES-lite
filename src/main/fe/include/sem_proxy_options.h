@@ -53,7 +53,7 @@ class SemProxyOptions
       throw std::runtime_error("lx/ly/lz must be > 0");
     if (is_snapshots && snap_time_interval <= 0)
       throw std::runtime_error("snap-time-interval must be > 0");
-      CompressConfig cc; std::string err;
+    CompressConfig cc; std::string err;
     if (!parse_compress(insitu_compress, cc, err)) throw std::runtime_error(err);
     if (compress_bounds != "snapshot" && compress_bounds != "global")
       throw std::runtime_error("compress-bounds must be snapshot|global");

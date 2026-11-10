@@ -18,6 +18,7 @@
 #include <fstream>
 #include <limits>
 #include "sem_proxy_options.h"
+#include "compression_config.hpp"
 
 /* Streaming statistics (Welford's algorithm): constant memory*/
 
@@ -48,6 +49,7 @@ struct StreamStats
 class SEMproxy
 {
  public:
+ std::ofstream compress_out_;
   /**
    * @brief Constructor of the SEMproxy class
    */
@@ -98,6 +100,7 @@ class SEMproxy
  private:
   int i1 = 0;
   int i2 = 1;
+  CompressConfig compress_cfg_;
   // proper to cartesian mesh
   // or any structured mesh
   int nb_elements_[3] = {0};

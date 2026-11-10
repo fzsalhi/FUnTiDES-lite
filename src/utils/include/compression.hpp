@@ -1,5 +1,4 @@
 // compression.hpp
-// compression.hpp
 // Interface de compression avec perte pour les snapshots.
 #pragma once
 #include <cstddef>
@@ -17,12 +16,12 @@ enum class Mode : uint8_t { Raw = 0, F16 = 1, IntN = 2 };
 enum Flags : uint8_t { DELTA = 1 << 0, RLE = 1 << 1 };
 
 struct Header {
-    uint32_t magic;        
-    uint16_t version;     
+    uint32_t magic;
+    uint16_t version;
     Mode     mode;         // Raw, F16 ou IntN
     uint8_t  nbits;        // 8 or 16 for IntN,else 0
     uint8_t  flags;        // DELTA, RLE
-    uint8_t  reserved[7];  
+    uint8_t  reserved[7];
     uint64_t n_elements;   // number of floats before compression
     uint64_t payload_size;
     float    scale;        // scale
@@ -43,8 +42,24 @@ static_assert(offsetof(Header, n_elements) == 16, "decalage inattendu");
 // float -> octets (en-tete + donnees quantifiees). `out` est vide au debut.
 // Pour mode == IntN, nbits doit valoir 8 ou 16 (ignore pour Raw et F16).
 // Renvoie false si les parametres sont invalides (out reste vide).
+//
+// Bornes (mode IntN uniquement) :
+//   amax_fixed == 0  -> bornes PAR SNAPSHOT : amax = max|p| du tableau
+//   amax_fixed  > 0  -> bornes GLOBALES : amax fixe a l'avance ; les valeurs
+//                       |p| > amax sont saturees (ecretees a +-qmax)
+// Sorties optionnelles :
+//   n_clipped : nombre de valeurs saturees (|q| > qmax avant ecretage)
+//   amax_used : borne effectivement utilisee
 bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
-              uint32_t step, std::vector<uint8_t>& out);
+              uint32_t step, std::vector<uint8_t>& out,
+              float amax_fixed = 0.0f, uint64_t* n_clipped = nullptr,
+              float* amax_used = nullptr);
+
+// Assemble en-tete + payload a partir d'entiers DEJA quantifies (int8_t[n] ou
+// int16_t[n], ordre natif). Utilise par la quantification GPU : l'en-tete est
+// construit par le meme code que quantize(), donc identique octet par octet.
+bool pack_intn(const void* q, uint64_t n, uint8_t nbits, float scale,
+               uint32_t step, std::vector<uint8_t>& out);
 
 // octets -> float (lit l'en-tete pour savoir quoi faire).
 // Renvoie false si le tampon est invalide (magic, version, tailles,

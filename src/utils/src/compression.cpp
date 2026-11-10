@@ -65,6 +65,22 @@ float half_to_float(uint16_t h) {
 
 bool valid_nbits(uint8_t nbits) { return nbits == 8 || nbits == 16; }
 
+// Unique endroit ou l'en-tete est construit (CPU et GPU passent par ici).
+Header make_header(Mode mode, uint8_t nbits, uint64_t n, uint64_t payload,
+                   float scale, uint32_t step) {
+    Header h{};  // initialise a zero : l'en-tete est identique octet par octet
+    h.magic        = MAGIC;
+    h.version      = VERSION;
+    h.mode         = mode;
+    h.nbits        = nbits;
+    h.flags        = 0;
+    h.n_elements   = n;
+    h.payload_size = payload;
+    h.scale        = scale;
+    h.step         = step;
+    return h;
+}
+
 }  // namespace
 
 float max_abs(const float* x, uint64_t n) {
@@ -77,9 +93,13 @@ float max_abs(const float* x, uint64_t n) {
 }
 
 bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
-              uint32_t step, std::vector<uint8_t>& out) {
+              uint32_t step, std::vector<uint8_t>& out,
+              float amax_fixed, uint64_t* n_clipped, float* amax_used) {
     out.clear();
+    if (n_clipped) *n_clipped = 0;
+    if (amax_used) *amax_used = 0.0f;
     if (n > 0 && in == nullptr) return false;
+    if (!std::isfinite(amax_fixed) || amax_fixed < 0.0f) return false;
 
     uint64_t elem = 0;  // octets par valeur
     switch (mode) {
@@ -93,25 +113,18 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
     }
     const uint64_t payload = n * elem;
 
-    Header h{};  // initialise a zero : l'en-tete est identique octet par octet
-    h.magic        = MAGIC;
-    h.version      = VERSION;
-    h.mode         = mode;
-    h.nbits        = nbits;
-    h.flags        = 0;
-    h.n_elements   = n;
-    h.payload_size = payload;
-    h.scale        = 1.0f;
-    h.step         = step;
-
-    float scale = 1.0f;
-    long  qmax  = 0;
+    float    scale   = 1.0f;
+    long     qmax    = 0;
+    uint64_t clipped = 0;
     if (mode == Mode::IntN) {
-        const float amax = max_abs(in, n);
+        // bornes globales si amax_fixed > 0, sinon par snapshot
+        const float amax = (amax_fixed > 0.0f) ? amax_fixed : max_abs(in, n);
         qmax  = (1L << (nbits - 1)) - 1;                       // 127 ou 32767
         scale = (amax > 0.0f) ? amax / static_cast<float>(qmax) : 1.0f;
-        h.scale = scale;
+        if (amax_used) *amax_used = amax;
     }
+
+    const Header h = make_header(mode, nbits, n, payload, scale, step);
 
     out.resize(sizeof(Header) + payload);
     uint8_t* p = out.data() + sizeof(Header);
@@ -132,6 +145,7 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
                 // pas pour arrondir proprement jusqu'a 32767 (cas 16 bits).
                 const double r = static_cast<double>(in[i]) / static_cast<double>(scale);
                 long q = std::isfinite(r) ? std::lround(r) : 0;
+                if (q > qmax || q < -qmax) ++clipped;  // sature (bornes globales)
                 q = std::max(-qmax, std::min(qmax, q));
                 if (nbits == 8) {
                     p[i] = static_cast<uint8_t>(static_cast<int8_t>(q));
@@ -144,6 +158,20 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
     }
 
     std::memcpy(out.data(), &h, sizeof h);  // en-tete ecrit en dernier
+    if (n_clipped) *n_clipped = clipped;
+    return true;
+}
+
+bool pack_intn(const void* q, uint64_t n, uint8_t nbits, float scale,
+               uint32_t step, std::vector<uint8_t>& out) {
+    out.clear();
+    if (!valid_nbits(nbits)) return false;
+    if (n > 0 && q == nullptr) return false;
+    const uint64_t payload = n * (nbits / 8);
+    const Header h = make_header(Mode::IntN, nbits, n, payload, scale, step);
+    out.resize(sizeof(Header) + payload);
+    if (n > 0) std::memcpy(out.data() + sizeof(Header), q, payload);
+    std::memcpy(out.data(), &h, sizeof h);
     return true;
 }
 
