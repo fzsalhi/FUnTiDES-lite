@@ -19,7 +19,7 @@ struct Header {
     uint32_t magic;
     uint16_t version;
     Mode     mode;         // Raw, F16 ou IntN
-    uint8_t  nbits;        // 8 or 16 for IntN,else 0
+    uint8_t  nbits;        // IntN : 2..16 (8/16 alignes, autres empaquetes), sinon 0
     uint8_t  flags;        // DELTA, RLE
     uint8_t  reserved[7];
     uint64_t n_elements;   // number of floats before compression
@@ -40,7 +40,9 @@ static_assert(sizeof(Header) ==
 static_assert(offsetof(Header, n_elements) == 16, "decalage inattendu");
 
 // float -> octets (en-tete + donnees quantifiees). `out` est vide au debut.
-// Pour mode == IntN, nbits doit valoir 8 ou 16 (ignore pour Raw et F16).
+// Pour mode == IntN, nbits doit etre entre 2 et 16 (ignore pour Raw et F16).
+// 8 et 16 : int8_t / int16_t. Autres N : valeurs decalees de +qmax (>= 0) et
+// empaquetees bit a bit (LSB-first) ; payload = ceil(n * nbits / 8) octets.
 // Renvoie false si les parametres sont invalides (out reste vide).
 //
 // Bornes (mode IntN uniquement) :

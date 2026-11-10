@@ -6,15 +6,15 @@
 #include "compression.hpp"
 
 // Syntaxe de --insitu-compress : <mode>[+etape]...
-//   mode  : raw | f16 | int8 | int16
-//   etapes: delta | rle                (pas encore disponibles)
+//   mode  : raw | f16 | intN  (N = 2..16 ; 8 et 16 alignes, autres empaquetes)
+//   etapes: delta | rle   (int8/int16 seulement ; pas encore disponibles)
 //           gpu           quantification sur le GPU (int8/int16 seulement)
 //           global=<amax> bornes globales : amax fixe a l'avance (defaut :
 //                         bornes par snapshot)
 //           check         (avec gpu) compare la sortie GPU a la version CPU,
 //                         octet par octet
 //           novalid       desactive dequantize + compare (mesure de cout)
-// Exemples : int8   int16+gpu   int8+gpu+global=0.26+check   int16+novalid
+// Exemples : int8   int12   int16+gpu   int8+gpu+global=0.26+check   int6+novalid
 struct CompressConfig {
   bool      enabled = false;
   cmp::Mode mode    = cmp::Mode::Raw;
@@ -41,8 +41,18 @@ inline bool parse_compress(const std::string& s, CompressConfig& c, std::string&
       first = false;
       if      (tok == "raw")   { c.mode = cmp::Mode::Raw; }
       else if (tok == "f16")   { c.mode = cmp::Mode::F16; }
-      else if (tok == "int8")  { c.mode = cmp::Mode::IntN; c.nbits = 8; }
-      else if (tok == "int16") { c.mode = cmp::Mode::IntN; c.nbits = 16; }
+      else if (tok.rfind("int", 0) == 0 && tok.size() > 3) {
+        // int2 ... int16
+        std::size_t pos = 0;
+        int nb = 0;
+        try { nb = std::stoi(tok.substr(3), &pos); } catch (...) { nb = 0; }
+        if (pos != tok.size() - 3 || nb < 2 || nb > 16) {
+          err = "intN : N doit etre un entier entre 2 et 16: " + tok;
+          return false;
+        }
+        c.mode  = cmp::Mode::IntN;
+        c.nbits = static_cast<uint8_t>(nb);
+      }
       else { err = "mode de compression inconnu: " + tok; return false; }
       c.enabled = true;
     } else if (tok == "delta")   { c.delta = true; }
@@ -59,7 +69,7 @@ inline bool parse_compress(const std::string& s, CompressConfig& c, std::string&
     else { err = "etape inconnue: " + tok; return false; }
   }
   if (c.global_bounds && c.mode != cmp::Mode::IntN) {
-    err = "global=<amax> ne concerne que int8 et int16";
+    err = "global=<amax> ne concerne que les modes intN";
     return false;
   }
   if (c.gpu && c.mode != cmp::Mode::IntN) {
@@ -68,6 +78,15 @@ inline bool parse_compress(const std::string& s, CompressConfig& c, std::string&
   }
   if (c.check && !c.gpu) {
     err = "check n'a de sens qu'avec gpu";
+    return false;
+  }
+  const bool packed = c.mode == cmp::Mode::IntN && c.nbits != 8 && c.nbits != 16;
+  if (c.gpu && packed) {
+    err = "gpu : seulement int8 et int16 (les autres N sont empaquetes sur CPU)";
+    return false;
+  }
+  if ((c.delta || c.rle) && packed) {
+    err = "delta/rle : seulement avec int8 / int16 (valeurs alignees sur des octets)";
     return false;
   }
   return true;

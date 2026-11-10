@@ -49,12 +49,22 @@ def read_cpm(path, dtype_out=np.float32, return_header=False):
     elif mode == MODE_F16:
         data = np.frombuffer(payload, dtype="<f2", count=n)
     elif mode == MODE_INTN:
-        if h["nbits"] == 8:
+        nb = h["nbits"]
+        if nb == 8:
             q = np.frombuffer(payload, dtype=np.int8, count=n)
-        elif h["nbits"] == 16:
+        elif nb == 16:
             q = np.frombuffer(payload, dtype="<i2", count=n)
+        elif 2 <= nb <= 16:
+            # empaquete LSB-first, valeurs decalees de +qmax
+            qmax = (1 << (nb - 1)) - 1
+            bits = np.unpackbits(np.frombuffer(payload, dtype=np.uint8),
+                                 bitorder="little")[: n * nb].reshape(n, nb)
+            u = np.zeros(n, dtype=np.int32)
+            for b in range(nb):            # boucle sur N bits, pas sur les noeuds
+                u |= bits[:, b].astype(np.int32) << b
+            q = u - qmax
         else:
-            raise ValueError(f"nbits={h['nbits']} non gere")
+            raise ValueError(f"nbits={nb} non gere")
         if h["flags"] & FLAG_DELTA:
             q = np.cumsum(q, dtype=q.dtype)   # decodage des differences
         data = q.astype(np.float64) * h["scale"]

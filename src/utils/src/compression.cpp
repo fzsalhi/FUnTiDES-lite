@@ -63,7 +63,46 @@ float half_to_float(uint16_t h) {
     return f;
 }
 
-bool valid_nbits(uint8_t nbits) { return nbits == 8 || nbits == 16; }
+// IntN : N entre 2 et 16. 8 et 16 sont stockes sur des octets entiers
+// (int8_t / int16_t), les autres valeurs sont empaquetees bit a bit.
+bool valid_nbits(uint8_t nbits) { return nbits >= 2 && nbits <= 16; }
+bool is_aligned(uint8_t nbits)  { return nbits == 8 || nbits == 16; }
+
+// Taille du payload IntN : ceil(n * nbits / 8) octets
+// (vaut n pour 8 bits et 2n pour 16 bits : meme taille qu'avant).
+uint64_t intn_payload(uint64_t n, uint8_t nbits) { return (n * nbits + 7) / 8; }
+
+// Ecriture bit a bit, bit de poids faible en premier (LSB-first).
+// acc accumule les bits ; des qu'il en contient 8, on sort un octet.
+struct BitWriter {
+    uint8_t* p;
+    uint64_t acc = 0;
+    int      nb  = 0;  // nombre de bits en attente dans acc
+    explicit BitWriter(uint8_t* dst) : p(dst) {}
+    void put(uint32_t v, int nbits) {
+        acc |= static_cast<uint64_t>(v) << nb;
+        nb  += nbits;
+        while (nb >= 8) { *p++ = static_cast<uint8_t>(acc); acc >>= 8; nb -= 8; }
+    }
+    void flush() {  // dernier octet incomplet, complete par des zeros
+        if (nb > 0) { *p++ = static_cast<uint8_t>(acc); acc = 0; nb = 0; }
+    }
+};
+
+// Lecture symetrique de BitWriter.
+struct BitReader {
+    const uint8_t* p;
+    uint64_t       acc = 0;
+    int            nb  = 0;
+    explicit BitReader(const uint8_t* src) : p(src) {}
+    uint32_t get(int nbits) {
+        while (nb < nbits) { acc |= static_cast<uint64_t>(*p++) << nb; nb += 8; }
+        const uint32_t v = static_cast<uint32_t>(acc & ((1u << nbits) - 1u));
+        acc >>= nbits;
+        nb  -= nbits;
+        return v;
+    }
+};
 
 // Unique endroit ou l'en-tete est construit (CPU et GPU passent par ici).
 Header make_header(Mode mode, uint8_t nbits, uint64_t n, uint64_t payload,
@@ -101,17 +140,16 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
     if (n > 0 && in == nullptr) return false;
     if (!std::isfinite(amax_fixed) || amax_fixed < 0.0f) return false;
 
-    uint64_t elem = 0;  // octets par valeur
+    uint64_t payload = 0;
     switch (mode) {
-        case Mode::Raw:  elem = 4; nbits = 0; break;
-        case Mode::F16:  elem = 2; nbits = 0; break;
+        case Mode::Raw: payload = n * 4; nbits = 0; break;
+        case Mode::F16: payload = n * 2; nbits = 0; break;
         case Mode::IntN:
             if (!valid_nbits(nbits)) return false;
-            elem = nbits / 8;
+            payload = intn_payload(n, nbits);
             break;
         default: return false;
     }
-    const uint64_t payload = n * elem;
 
     float    scale   = 1.0f;
     long     qmax    = 0;
@@ -119,7 +157,7 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
     if (mode == Mode::IntN) {
         // bornes globales si amax_fixed > 0, sinon par snapshot
         const float amax = (amax_fixed > 0.0f) ? amax_fixed : max_abs(in, n);
-        qmax  = (1L << (nbits - 1)) - 1;                       // 127 ou 32767
+        qmax  = (1L << (nbits - 1)) - 1;  // 127 (8 bits), 2047 (12), 32767 (16)
         scale = (amax > 0.0f) ? amax / static_cast<float>(qmax) : 1.0f;
         if (amax_used) *amax_used = amax;
     }
@@ -139,7 +177,8 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
                 std::memcpy(p + 2 * i, &v, 2);
             }
             break;
-        case Mode::IntN:
+        case Mode::IntN: {
+            BitWriter bw(p);  // utilise seulement si N n'est ni 8 ni 16
             for (uint64_t i = 0; i < n; ++i) {
                 // Division en double : en float, 24 bits de mantisse ne suffisent
                 // pas pour arrondir proprement jusqu'a 32767 (cas 16 bits).
@@ -149,12 +188,17 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
                 q = std::max(-qmax, std::min(qmax, q));
                 if (nbits == 8) {
                     p[i] = static_cast<uint8_t>(static_cast<int8_t>(q));
-                } else {
+                } else if (nbits == 16) {
                     const int16_t v = static_cast<int16_t>(q);
                     std::memcpy(p + 2 * i, &v, 2);
+                } else {
+                    // decalage : q dans [-qmax, qmax] -> [0, 2*qmax], tient sur N bits
+                    bw.put(static_cast<uint32_t>(q + qmax), nbits);
                 }
             }
+            if (!is_aligned(nbits)) bw.flush();
             break;
+        }
     }
 
     std::memcpy(out.data(), &h, sizeof h);  // en-tete ecrit en dernier
@@ -165,7 +209,7 @@ bool quantize(const float* in, uint64_t n, Mode mode, uint8_t nbits,
 bool pack_intn(const void* q, uint64_t n, uint8_t nbits, float scale,
                uint32_t step, std::vector<uint8_t>& out) {
     out.clear();
-    if (!valid_nbits(nbits)) return false;
+    if (!is_aligned(nbits)) return false;  // le GPU ne produit que 8 / 16 bits
     if (n > 0 && q == nullptr) return false;
     const uint64_t payload = n * (nbits / 8);
     const Header h = make_header(Mode::IntN, nbits, n, payload, scale, step);
@@ -184,19 +228,21 @@ bool dequantize(const uint8_t* in, uint64_t nbytes, std::vector<float>& out) {
     if (h.magic != MAGIC || h.version != VERSION) return false;
     if (h.flags != 0) return false;  // etapes sans perte a defaire avant
 
-    uint64_t elem = 0;
+    // au moins 2 bits par element : n <= 4 * nbytes (evite aussi les debordements)
+    if (h.n_elements / 4 > nbytes) return false;
+
+    uint64_t expected = 0;
     switch (h.mode) {
-        case Mode::Raw: elem = 4; break;
-        case Mode::F16: elem = 2; break;
+        case Mode::Raw: expected = h.n_elements * 4; break;
+        case Mode::F16: expected = h.n_elements * 2; break;
         case Mode::IntN:
             if (!valid_nbits(h.nbits)) return false;
             if (!(h.scale > 0.0f) || !std::isfinite(h.scale)) return false;
-            elem = h.nbits / 8;
+            expected = intn_payload(h.n_elements, h.nbits);
             break;
         default: return false;
     }
-    if (h.n_elements > nbytes) return false;  // evite un debordement du produit
-    if (h.payload_size != h.n_elements * elem) return false;
+    if (h.payload_size != expected) return false;
     if (h.payload_size > nbytes - sizeof(Header)) return false;
 
     const uint8_t* p = in + sizeof(Header);
@@ -214,19 +260,24 @@ bool dequantize(const uint8_t* in, uint64_t nbytes, std::vector<float>& out) {
                 out[i] = half_to_float(v);
             }
             break;
-        case Mode::IntN:
+        case Mode::IntN: {
+            const long qmax = (1L << (h.nbits - 1)) - 1;
+            BitReader br(p);  // utilise seulement si N n'est ni 8 ni 16
             for (uint64_t i = 0; i < n; ++i) {
                 long q;
                 if (h.nbits == 8) {
                     q = static_cast<int8_t>(p[i]);
-                } else {
+                } else if (h.nbits == 16) {
                     int16_t v;
                     std::memcpy(&v, p + 2 * i, 2);
                     q = v;
+                } else {
+                    q = static_cast<long>(br.get(h.nbits)) - qmax;  // retire le decalage
                 }
                 out[i] = static_cast<float>(q) * h.scale;
             }
             break;
+        }
     }
     return true;
 }
