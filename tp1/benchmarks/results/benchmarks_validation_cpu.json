@@ -1,0 +1,43 @@
+{
+  "batch_id": "20261111T124512.361705Z",
+  "config": {
+    "elements": [
+      4,
+      6,
+      8
+    ],
+    "order": 2,
+    "dt": 0.001,
+    "timemax": 0.12,
+    "interval": 20,
+    "receivers": "1150,1000,1000\n1000,1300,1000\n1260,1260,1260\n580,1000,1420",
+    "position": 1000
+  },
+  "config_hash": "51eece8e81be208e739ce1be34180c84447c1c1080e65c224f9e52a4de35e7b4",
+  "source_hash": "5e277a79c06104fb448a1dcab6d33b653efc38a4d22af4d75bf9ce4be413083c",
+  "machine": "wiam-HP-Laptop-15-dw2xxx",
+  "platform": "Linux-6.8.0-138-generic-x86_64-with-glibc2.35",
+  "logical_cpus": 8,
+  "command": [
+    "tp1/benchmarks/run_benchmarks.py",
+    "--quick",
+    "--threads",
+    "2",
+    "--runs",
+    "3",
+    "--warmups",
+    "1",
+    "--output",
+    "tp1/benchmarks/results/benchmarks_validation_cpu.csv"
+  ],
+  "io_sync": "buffered",
+  "cache": "Lectures après écriture, cache OS non contrôlé. buffered=cache OS; fsync=fsync par fichier.",
+  "executables": {
+    "cpu": {
+      "path": "/home/wiam/traitement_in_situ/FUnTiDES-lite/build-openmp/bin/semproxy",
+      "sha256": "71b9bf3120fa289ae5d6c2d7abde7585aa8dd833ccaf1e6d8d391f5c228b6648"
+    }
+  },
+  "cpu_info": "Architecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           39 bits physical, 48 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  8\nOn-line CPU(s) list:                     0-7\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Core(TM) i5-1035G1 CPU @ 1.00GHz\nCPU family:                              6\nModel:                                   126\nThread(s) per core:                      2\nCore(s) per socket:                      4\nSocket(s):                               1\nStepping:                                5\nCPU max MHz:                             3600.0000\nCPU min MHz:                             400.0000\nBogoMIPS:                                2380.80\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt intel_pt avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves split_lock_detect dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm md_clear flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               192 KiB (4 instances)\nL1i cache:                               128 KiB (4 instances)\nL2 cache:                                2 MiB (4 instances)\nL3 cache:                                6 MiB (1 instance)\nNUMA node(s):                            1\nNUMA node0 CPU(s):                       0-7\nVulnerability Gather data sampling:      Mitigation; Microcode\nVulnerability Indirect target selection: Mitigation; Aligned branch/return thunks\nVulnerability Itlb multihit:             KVM: Mitigation: VMX disabled\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Mitigation; Clear CPU buffers; SMT vulnerable\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Mitigation; Enhanced IBRS\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI SW loop, KVM SW loop\nVulnerability Srbds:                     Mitigation; Microcode\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n",
+  "gpu_info": "indisponible"
+}
