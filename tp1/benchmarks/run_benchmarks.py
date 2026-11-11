@@ -66,7 +66,7 @@ def parse_threads(value):
         numbers = [int(item.strip()) for item in value.split(",")]
     except ValueError as error:
         raise argparse.ArgumentTypeError(
-            "Utilise par exemple --threads 1,2,4,8"
+            "Exemple : --threads 1,2,4,8"
         ) from error
 
     if (
@@ -304,7 +304,7 @@ def main():
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--modes", type=parse_modes, default=MODE_ORDER)
     parser.add_argument("--formats", default="csv,bin")
-    parser.add_argument("--sizes", default="10,15,20", help="Éléments par axe pour S,M,L, repris de run_two.py")
+    parser.add_argument("--sizes", default="10,15,20", help="Nombre d'éléments par axe pour S,M,L")
     parser.add_argument("--order", type=int, default=ORDER)
     parser.add_argument("--dt", type=float, default=DT)
     parser.add_argument("--timemax", type=float, default=TIMEMAX)
@@ -356,7 +356,7 @@ def main():
         if not executable.is_file() or not os.access(executable, os.X_OK):
             parser.error(f"Exécutable absent : {executable}")
     if not args.no_render and shutil.which("gnuplot") is None:
-        parser.error("Gnuplot, déjà utilisé par les visualiseurs du projet, est requis")
+        parser.error("Gnuplot est requis pour générer les images")
     cases = [(backend, threads, size, n, mode, fmt)
              for backend, threads, (size, n), mode in itertools.product(executables, args.threads, zip(labels, elements), args.modes)
              for fmt in (["none"] if mode == "none" else formats)]

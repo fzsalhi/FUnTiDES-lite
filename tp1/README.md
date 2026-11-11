@@ -1,13 +1,15 @@
 # TP1 — Workflow ad-hoc
 
-Le TP1 réutilise les scripts du groupe, auparavant dans `scripts/` :
+La simulation sauvegarde les snapshots et les sismogrammes en CSV ou en binaire. Les scripts de post-traitement relisent ces fichiers pour produire les images et mesurer le coût du workflow ad-hoc.
 
-- `benchmarks/run_benchmarks.py` : simulation, post-traitement et mesures ; la variation de maillage de l'ancien `run_two.py` est intégrée ici.
+Le dossier contient :
+
+- `benchmarks/run_benchmarks.py` : lancement des simulations, post-traitement et mesures sur les maillages S, M et L.
 - `benchmarks/plot_benchmarks.py` : figures Gnuplot et résumé des répétitions.
 - `visualisation/visu_snapshots.py` et `visu_sismos.py` : visualisation après la simulation, en CSV ou en binaire.
-- `benchmarks/results/`, `benchmarks/plots/`, `visualisation/data/` et `visualisation/images/` : résultats et images, y compris ceux déjà obtenus avant cette réorganisation.
+- `benchmarks/results/`, `benchmarks/plots/`, `visualisation/data/` et `visualisation/images/` : mesures, figures et données de simulation.
 
-Aucune nouvelle bibliothèque. Les scripts utilisent Python standard et Gnuplot, déjà utilisé par le projet. Le calcul C++ utilise le sous-module Kokkos existant. Les traitements in-situ restent désactivés pour les mesures TP1.
+Les scripts utilisent la bibliothèque standard de Python et Gnuplot. Le calcul C++ utilise Kokkos, intégré au projet par un sous-module Git. Les traitements in-situ sont désactivés pour les mesures du TP1.
 
 ## Compiler sur CPU
 
@@ -20,10 +22,11 @@ cmake -S . -B build-openmp -DCMAKE_BUILD_TYPE=Release \
 cmake --build build-openmp --target semproxy -j 2
 ```
 
-La compilation GPU doit être faite sur le serveur, avec sa configuration CUDA/Kokkos adaptée à la carte. Aucun outil ne compile automatiquement une version GPU.
+La version GPU se compile sur le serveur, avec une configuration CUDA/Kokkos adaptée à la carte.
 
 ## Lancer les benchmarks
 
+Les trois configurations utilisent un ordre spectral de 2. Les paramètres et la machine sont conservés pour les comparaisons avec les TP suivants.
 
 | Configuration | Éléments par axe | Ordre | Nœuds par axe | Nombre de nœuds |
 |---|---:|---:|---:|---:|
@@ -150,5 +153,5 @@ Les 30 snapshots de L occupent 53,80 Mio en CSV contre 8,68 Mio en binaire, coor
 
 Les [figures à deux courbes](benchmarks/plots/), le [résumé des répétitions](benchmarks/plots/summary.csv) et la [liste des colonnes tracées](benchmarks/plots/plotted_columns.csv) proviennent du [CSV de mesures](benchmarks/results/benchmarks_20261111T130533.603751Z.csv). La [description de la machine et des paramètres](benchmarks/results/benchmarks_20261111T130533.603751Z.json) accompagne ce CSV.
 
-Le dossier `benchmarks/plots_cpu_threads/` contient les mêmes images que les anciennes figures placées directement dans `benchmarks/plots/`. La campagne serveur ci-dessus utilise uniquement 4 threads CPU ; elle ne constitue pas une nouvelle mesure de passage à l'échelle en nombre de threads.
+Le dossier `benchmarks/plots_cpu_threads/` conserve les figures des essais OpenMP précédents. La campagne serveur présentée ici utilise uniquement 4 threads CPU.
 
