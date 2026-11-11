@@ -1,0 +1,48 @@
+{
+  "batch_id": "20261111T130533.603751Z",
+  "config": {
+    "elements": [
+      10,
+      15,
+      20
+    ],
+    "order": 2,
+    "dt": 0.001,
+    "timemax": 1.5,
+    "interval": 50,
+    "receivers": "1150,1000,1000\n1000,1300,1000\n1260,1260,1260\n580,1000,1420",
+    "position": 1000
+  },
+  "config_hash": "24b61e6dd9386d366b6ef5991f2156e9f8733d4083aabe8b8b6a3998be6edaea",
+  "source_hash": "5e277a79c06104fb448a1dcab6d33b653efc38a4d22af4d75bf9ce4be413083c",
+  "machine": "jessica",
+  "platform": "Linux-7.2.11+deb13-amd64-x86_64-with-glibc2.41",
+  "logical_cpus": 24,
+  "command": [
+    "tp1/benchmarks/run_benchmarks.py",
+    "--cpu-exe",
+    "./build-openmp/bin/semproxy",
+    "--gpu-exe",
+    "./build-cuda/bin/semproxy",
+    "--threads",
+    "4",
+    "--runs",
+    "5",
+    "--warmups",
+    "1"
+  ],
+  "io_sync": "buffered",
+  "cache": "Lectures après écriture, cache OS non contrôlé. buffered=cache OS; fsync=fsync par fichier.",
+  "executables": {
+    "cpu": {
+      "path": "/autofs/unityaccount/cremi/warezqi002/FUnTiDES-lite/build-openmp/bin/semproxy",
+      "sha256": "1befdbd06e1381430aaf6b73f28e5fc4c5576fda86c9003c7b68f000a7f59314"
+    },
+    "gpu": {
+      "path": "/autofs/unityaccount/cremi/warezqi002/FUnTiDES-lite/build-cuda/bin/semproxy",
+      "sha256": "8a23ebf327ffa73e9db2ef1ba8bfabe3bd1aa6de90890704b18eb772681b7fa9"
+    }
+  },
+  "cpu_info": "Architecture :                            x86_64\nMode(s) opératoire(s) des processeurs :   32-bit, 64-bit\nTailles des adresses:                     46 bits physical, 48 bits virtual\nBoutisme :                                Little Endian\nProcesseur(s) :                           24\nListe de processeur(s) en ligne :         0-23\nIdentifiant constructeur :                GenuineIntel\nNom de modèle :                           Intel(R) Core(TM) Ultra 9 285\nFamille de processeur :                   6\nModèle :                                  198\nThread(s) par cœur :                      1\nCœur(s) par socket :                      24\nSocket(s) :                               1\nRévision :                                2\nmultiplication des MHz du/des CPU(s) :    28%\nVitesse maximale du processeur en MHz :   5600,0000\nVitesse minimale du processeur en MHz :   800,0000\nBogoMIPS :                                4992,00\nDrapeaux :                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf tsc_known_freq pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb ssbd ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rdt_a rdseed adx smap clflushopt clwb intel_pt sha_ni xsaveopt xsavec xgetbv1 xsaves split_lock_detect user_shstk avx_vnni lass lam wbnoinvd dtherm ida arat pln pts hwp hwp_notify hwp_act_window hwp_epp hwp_pkg_req hfi vnmi umip pku ospke waitpkg gfni vaes vpclmulqdq rdpid bus_lock_detect movdiri movdir64b fsrm md_clear serialize pconfig arch_lbr flush_l1d arch_capabilities\nVirtualisation :                          VT-x\nCache L1d :                               768 KiB (20 instances)\nCache L1i :                               1,3 MiB (20 instances)\nCache L2 :                                40 MiB (12 instances)\nCache L3 :                                36 MiB (1 instance)\nNœud(s) NUMA :                            1\nNœud NUMA 0 de processeur(s) :            0-23\nVulnérabilité Gather data sampling :      Not affected\nVulnérabilité Ghostwrite :                Not affected\nVulnérabilité Indirect target selection : Not affected\nVulnérabilité Itlb multihit :             Not affected\nVulnérabilité L1tf :                      Not affected\nVulnérabilité Mds :                       Not affected\nVulnérabilité Meltdown :                  Not affected\nVulnérabilité Mmio stale data :           Not affected\nVulnérabilité Old microcode :             Not affected\nVulnérabilité Reg file data sampling :    Not affected\nVulnérabilité Retbleed :                  Not affected\nVulnérabilité Spec rstack overflow :      Not affected\nVulnérabilité Spec store bypass :         Mitigation; Speculative Store Bypass disabled via prctl\nVulnérabilité Spectre v1 :                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnérabilité Spectre v2 :                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS Not affected; BHI BHI_DIS_S\nVulnérabilité Srbds :                     Not affected\nVulnérabilité Tsa :                       Not affected\nVulnérabilité Tsx async abort :           Not affected\nVulnérabilité Vmscape :                   Mitigation; IBPB before exit to userspace\n",
+  "gpu_info": "NVIDIA RTX 4000 Ada Generation, 620.70.06, 20475 MiB\n"
+}
