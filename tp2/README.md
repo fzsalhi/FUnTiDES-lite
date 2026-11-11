@@ -86,20 +86,94 @@ Une vérification par taille compare les statistiques et les spectres sur les m�
 
 Les CSV et JSON sont dans `benchmarks/results/`. Les figures sont dans `benchmarks/plots/cpu/`, `gpu/` et `cpu_vs_gpu/`. Les anciens résultats restent dans `benchmarks/archives/` avec leurs paramètres d’origine.
 
-Chaque figure contient au plus deux courbes.
+La campagne complète avec `--fft`, sans filtre de figures, prévoit 63 images après validation : 26 dans `cpu/`, 31 dans `gpu/` et 6 dans `cpu_vs_gpu/`. Chaque figure contient deux courbes. Les points des courbes de temps donnent la moyenne des cinq répétitions, avec l’écart-type.
 
-| Figures | Comparaison |
+L’axe horizontal représente S, M et L, sauf pour `precision_*`, où il représente l’intervalle entre les sorties. Les statistiques calculées restent min, max, moyenne et variance. Leurs valeurs sont dans les CSV ; les figures de performance mesurent le coût de leur calcul ensemble.
+
+### Comparaisons directes CPU / GPU
+
+Dans `benchmarks/plots/cpu_vs_gpu/`, chaque figure a une courbe CPU OpenMP à 4 threads et une courbe GPU CUDA.
+
+| Fichier | Mesure comparée entre CPU et GPU |
 |---|---|
-| `snapshots_*`, `sismos_*` | Ad-hoc / in-situ : workflow, volume, analyse, E/S et surcoût |
-| `stats_gpu_vs_hostcopy`, `stats_gpu_vs_uvm_cpu` | Calcul GPU / CPU sur la même simulation CUDA |
-| `stats_hostcopy_workflow`, `stats_transfer_bytes` | Temps global et volumes logiques transférés |
-| `slice_*` | Volume complet / slice : temps, volume, lecture, rendu et coût d’extraction |
-| `sismo_fft_*` | NumPy / cuFFT : workflow, calcul, préparation et volume |
-| `precision_S`, `precision_M`, `precision_L` | Erreur selon l’intervalle entre sorties |
-| `snapshots_validation`, `sismos_validation`, `fft_validation` | Écart numérique entre les analyses |
-| `scalability_steps`, `scalability_compute` | Mesures sous CFL / modèles N et N⁴ |
+| `baseline.png` | Calcul de la simulation sans traitement supplémentaire |
+| `snapshot_adhoc.png` | Simulation + écriture binaire + lecture + statistiques des snapshots |
+| `snapshot_insitu_gpu.png` | Simulation + statistiques in-situ des snapshots + écriture des résultats |
+| `sismo_insitu.png` | Simulation + statistiques des récepteurs en flux + écriture des résultats |
+| `visual_full.png` | Workflow depuis les snapshots complets, visualisation incluse |
+| `visual_slice.png` | Workflow depuis les slices, visualisation incluse |
 
-Dans `cpu_vs_gpu/`, les deux courbes sont CPU et GPU : calcul seul, workflow snapshots ad-hoc, snapshots in-situ, sismogrammes in-situ, puis workflow avec visualisation depuis le volume ou les slices.
+Le rendu des images reste sur CPU dans les deux courbes de `visual_full.png` et `visual_slice.png`.
+
+### Ad-hoc / in-situ
+
+Ces figures existent dans `cpu/` et `gpu/`. Chaque ligne du tableau correspond à deux images : une pour les snapshots et une pour les sismogrammes.
+
+| Fichiers | Mesure | Courbe 1 | Courbe 2 |
+|---|---|---|---|
+| `snapshots_workflow.png`, `sismos_workflow.png` | Temps total du workflow numérique | Ad-hoc binaire | In-situ |
+| `snapshots_storage.png`, `sismos_storage.png` | Volume des données et résultats | Ad-hoc binaire | In-situ |
+| `snapshots_analysis.png`, `sismos_analysis.png` | Temps de calcul des statistiques | Analyse ad-hoc | Analyse in-situ |
+| `snapshots_io.png`, `sismos_io.png` | Temps des E/S et copies indiquées | Écriture brute + lecture | Copie + écriture des résultats in-situ |
+| `snapshots_overhead.png`, `sismos_overhead.png` | Temps ajouté par rapport au cas sans traitement | Ad-hoc | In-situ |
+
+Ces workflows numériques comprennent la simulation et le post-traitement associé. La visualisation est incluse dans les cas `visual_full` et `visual_slice` uniquement.
+
+### Statistiques sur GPU ou sur CPU
+
+Dans `gpu/`, la simulation reste sur GPU dans les deux courbes ; seul le traitement des statistiques change.
+
+| Fichier | Courbe 1 | Courbe 2 |
+|---|---|---|
+| `stats_gpu_vs_hostcopy.png` | Temps de réduction GPU + copie du résultat | Temps de copie du champ + calcul CPU |
+| `stats_gpu_vs_uvm_cpu.png` | Temps de réduction GPU + copie du résultat | Temps de parcours direct du champ UVM sur CPU |
+| `stats_hostcopy_workflow.png` | Workflow avec statistiques GPU | Workflow avec copie et statistiques CPU |
+| `stats_transfer_bytes.png` | Volume logique du petit résultat de réduction | Volume logique du champ complet |
+
+Dans `cpu/`, ces mêmes fichiers comparent la réduction OpenMP au parcours CPU. La réduction appelée « device » dans la légende y utilise OpenMP, pas CUDA.
+
+### Slices
+
+Ces figures existent dans `cpu/` et `gpu/`. Le plan de coupe et le rendu sont les mêmes des deux côtés.
+
+| Fichier | Courbe 1 | Courbe 2 |
+|---|---|---|
+| `slice_workflow.png` | Temps du workflow depuis le volume complet | Temps du workflow depuis la slice |
+| `slice_storage.png` | Volume écrit avec le champ complet et ses résultats | Volume écrit avec la slice et ses résultats |
+| `slice_read.png` | Temps de lecture du volume | Temps de lecture de la slice |
+| `slice_render.png` | Temps de rendu depuis le volume | Temps de rendu depuis la slice |
+| `slice_extraction_vs_write_gain.png` | Coût de sélection, extraction et copie | Temps d’écriture économisé |
+
+`slice_workflow.png` comprend la production des images et permet de comparer le coût total des deux méthodes.
+
+### Précision et scalabilité
+
+Ces figures existent dans `cpu/` et `gpu/`.
+
+| Fichiers | Courbe 1 | Courbe 2 |
+|---|---|---|
+| `precision_S.png`, `precision_M.png`, `precision_L.png` | Erreur normalisée sur le maximum de pression | Erreur normalisée sur la moyenne temporelle |
+| `snapshots_validation.png`, `sismos_validation.png` | Écart numérique normalisé sur le maximum | Écart numérique normalisé sur la moyenne |
+| `scalability_steps.png` | Nombre de pas mesuré sous CFL | Modèle proportionnel à N |
+| `scalability_compute.png` | Temps de calcul mesuré sous CFL | Modèle proportionnel à N⁴ |
+
+Pour `precision_*`, les intervalles sont 1, 2, 5, 10, 20, 50 et 100 pas ; la référence utilise tous les pas. Les figures `*_validation` comparent les méthodes sur les mêmes données et aux mêmes instants. Les quatre statistiques sont contrôlées dans le CSV de validation ; la figure affiche le maximum et la moyenne.
+
+### FFT des sismogrammes
+
+Ces cinq figures sont produites dans `gpu/` avec `--fft`. Pour les comparaisons NumPy/cuFFT, la simulation utilise CUDA des deux côtés. La FFT concerne uniquement les sismogrammes.
+
+| Fichier | Courbe 1 | Courbe 2 |
+|---|---|---|
+| `sismo_fft_workflow.png` | Workflow binaire puis statistiques et FFT NumPy sur CPU | Workflow statistiques et cuFFT in-situ |
+| `sismo_fft_compute.png` | Temps de calcul FFT NumPy seul | Temps de calcul cuFFT seul |
+| `sismo_fft_setup.png` | Allocation et création du plan cuFFT | Traitement cuFFT complet |
+| `sismo_fft_storage.png` | Volume des données brutes et résultats ad-hoc | Volume des résultats in-situ |
+| `fft_validation.png` | Erreur normalisée sur les amplitudes spectrales | Erreur normalisée sur les fréquences |
+
+Le traitement cuFFT complet inclut la préparation, le plan, la FFT, les transferts, l’écriture et la libération des ressources. NumPy et cuFFT utilisent ici des précisions différentes ; le temps de calcul seul dépend aussi de la bibliothèque utilisée.
+
+### Refaire les figures
 
 Pour refaire les figures sans relancer les simulations, remplacer `NOM` par le nom de la campagne :
 
