@@ -1,0 +1,49 @@
+{
+  "figures": [
+    "cpu_vs_gpu.png",
+    "fft.png",
+    "precision.png",
+    "scalabilite.png",
+    "sismogrammes.png",
+    "slices.png",
+    "snapshots.png",
+    "statistiques_cpu_gpu.png"
+  ],
+  "sources": {
+    "snapshots.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "sismogrammes.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "fft.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "slices.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "statistiques_cpu_gpu.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "precision.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "scalabilite.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ],
+    "cpu_vs_gpu.png": [
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_gpu.csv",
+      "/home/wiam/traitement_in_situ/FUnTiDES-lite/tp2/benchmarks/results/tp2_20261111T145417.364886Z_cpu.csv"
+    ]
+  },
+  "primary_backend": "gpu",
+  "machine": "jessica",
+  "profile": "reference"
+}

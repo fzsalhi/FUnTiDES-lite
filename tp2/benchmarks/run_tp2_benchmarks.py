@@ -84,6 +84,7 @@ def main():
     parser.add_argument("--keep-data", action="store_true")
     parser.add_argument("--expect-backend", choices=["cpu", "gpu"])
     parser.add_argument("--plot-only", type=Path)
+    parser.add_argument("--no-plots", action="store_true", help="Conserver uniquement les mesures")
     args = parser.parse_args()
     if args.cpu_exe or args.gpu_exe:
         if not (args.cpu_exe and args.gpu_exe) or args.exe:
@@ -95,7 +96,7 @@ def main():
             output = prefix.with_name(prefix.stem + "_" + backend + ".csv")
             command = [sys.executable, str(Path(__file__).resolve()), "--config", str(args.config),
                        "--exe", str(executable), "--expect-backend", backend, "--output", str(output),
-                       "--modes", args.modes]
+                       "--modes", args.modes, "--no-plots"]
             for key in ("runs", "warmups", "threads"):
                 if getattr(args, key) is not None: command += ["--" + key, str(getattr(args, key))]
             if args.quick: command.append("--quick")
@@ -104,7 +105,10 @@ def main():
             if args.figures: command += ["--figures", args.figures]
             subprocess.run(command, cwd=ROOT, check=True)
             outputs.append(output)
-        subprocess.run([sys.executable, str(HERE / "plot_tp2_benchmarks.py"), "--compare", *map(str, outputs)], check=True)
+        if not args.no_plots:
+            command = [sys.executable, str(HERE / "plot_tp2_benchmarks.py"), "--compare", *map(str, outputs)]
+            if args.figures: command += ['--figures', args.figures]
+            subprocess.run(command, check=True)
         return
     if args.plot_only:
         command = [sys.executable, str(HERE/"plot_tp2_benchmarks.py"), "--input", str(args.plot_only)]
@@ -269,9 +273,10 @@ def main():
     output.with_suffix('.json').write_text(json.dumps(meta,indent=2,ensure_ascii=False)+"\n")
     if any(not r['passed'] for r in checks): raise RuntimeError("Ecart numerique excessif : voir le CSV de validation")
     subprocess.run([sys.executable,str(HERE/'bench_scalability.py'),'--raw',str(output),'--out',str(output.with_name(output.stem+'_scalability.json'))],check=True)
-    command = [sys.executable,str(HERE/'plot_tp2_benchmarks.py'),'--input',str(output)]
-    if args.figures: command += ['--figures', args.figures]
-    subprocess.run(command,check=True)
+    if not args.no_plots:
+        command = [sys.executable,str(HERE/'plot_tp2_benchmarks.py'),'--input',str(output)]
+        if args.figures: command += ['--figures', args.figures]
+        subprocess.run(command,check=True)
     print(f"Mesures : {output}")
 
 

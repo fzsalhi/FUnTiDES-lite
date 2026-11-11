@@ -1,194 +1,350 @@
+"""Figures TP2 : une comparaison par image, avec deux a quatre panneaux."""
 import argparse
+from collections import defaultdict
 import csv
 import json
+import math
 from pathlib import Path
 import statistics
+import subprocess
 import sys
-from collections import defaultdict
 
-HERE=Path(__file__).resolve().parent
-sys.path.insert(0,str(HERE.parents[1]/'tp1'/'benchmarks'))
-import plot_benchmarks as charts
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / 'tp1' / 'benchmarks'))
+from plot_benchmarks import gnuplot_string
+
+COLORS = ['#2563eb', '#ea580c', '#059669', '#7c3aed']
+FIGURES = ['snapshots', 'sismogrammes', 'fft', 'slices', 'statistiques_cpu_gpu',
+           'precision', 'scalabilite', 'cpu_vs_gpu']
 
 
-def compare_backends(paths, output):
-    datasets = {}
-    identities = []
-    for path in paths:
-        with path.open(newline='') as stream: rows = list(csv.DictReader(stream))
-        if not rows: raise ValueError('Aucune mesure : ' + str(path))
-        identity = {(r['machine'], r['source_hash'], r['config_hash'], r['threads'], r['io_sync']) for r in rows}
-        if len(identity) != 1: raise ValueError('Mesures incompatibles : ' + str(path))
-        identities.append(next(iter(identity)))
-        backends = {r['backend'] for r in rows}
-        if len(backends) != 1: raise ValueError('Plusieurs backends dans une campagne')
-        datasets[next(iter(backends))] = rows
-    if identities[0] != identities[1] or set(datasets) != {'cpu', 'gpu'}:
-        raise ValueError('La comparaison exige CPU et GPU sur la meme machine avec les memes parametres et sources')
-    output.mkdir(parents=True, exist_ok=True)
-    charts.PLOTS_DIR = output
-    sizes = sorted({r['size'] for r in datasets['cpu']}, key=lambda size: next(int(r['nodes']) for r in datasets['cpu'] if r['size']==size))
-    figures = []
-    for mode, title, key in [('baseline', 'Calcul de la simulation', 'compute_s'),
-            ('snapshot_adhoc', 'Snapshots : workflow ad-hoc', 'workflow_s'),
-            ('snapshot_insitu_gpu', 'Snapshots : workflow in-situ', 'workflow_s'),
-            ('sismo_insitu', 'Sismogrammes : workflow in-situ', 'workflow_s'),
-            ('visual_full', 'Workflow complet avec visualisation du volume', 'workflow_s'),
-            ('visual_slice', 'Workflow complet avec visualisation des slices', 'workflow_s')]:
-        series, errors = [], []
-        for backend, rows in datasets.items():
-            values = [[float(r[key]) for r in rows if r['size']==size and r['mode']==mode] for size in sizes]
-            if any(not v for v in values): break
-            series.append((backend.upper(), [statistics.mean(v) for v in values]))
-            errors.append([statistics.stdev(v) if len(v)>1 else 0 for v in values])
-        if len(series) != 2: continue
-        name = mode + '.png'
-        charts.plot_lines(name, title + ' CPU / GPU', 'Temps (s)', range(1,len(sizes)+1), series,
-                          errors=errors, x_tick_labels=sizes, x_label='Configuration')
-        figures.append(name)
-    (output/'figures.json').write_text(json.dumps(dict(sources=[str(p) for p in paths], figures=figures), indent=2)+'\n')
-    print(f'{len(figures)} comparaisons CPU / GPU : {output}')
+class Campaign:
+    def __init__(self, path):
+        self.path = Path(path).resolve()
+        with self.path.open(newline='') as stream:
+            self.rows = list(csv.DictReader(stream))
+        if not self.rows:
+            raise ValueError(f'Aucune mesure : {path}')
+        identities = {(r['machine'], r['source_hash'], r['config_hash'], r['threads'],
+                       r['io_sync'], r['profile'], r['backend']) for r in self.rows}
+        if len(identities) != 1:
+            raise ValueError(f'Mesures incompatibles : {path}')
+        identity = next(iter(identities))
+        self.identity, self.backend = identity[:-1], identity[-1]
+        self.groups = defaultdict(list)
+        for row in self.rows:
+            self.groups[(row['size'], row['mode'])].append(row)
+        self.sizes = sorted({r['size'] for r in self.rows},
+                            key=lambda s: next(int(r['nodes']) for r in self.rows if r['size'] == s))
+
+    def has(self, *modes):
+        return all((size, mode) in self.groups for size in self.sizes for mode in modes)
+
+    def series(self, label, mode, extract):
+        means, errors = [], []
+        for size in self.sizes:
+            values = [extract(r) for r in self.groups[(size, mode)]]
+            if not values or not all(math.isfinite(v) for v in values):
+                raise ValueError(f'Mesure absente ou non finie : {size} {mode}')
+            means.append(statistics.mean(values))
+            errors.append(statistics.stdev(values) if len(values) > 1 else 0)
+        return dict(label=label, values=means, errors=errors)
+
+    def mean(self, size, mode, extract):
+        return statistics.mean(extract(r) for r in self.groups[(size, mode)])
+
+    def sidecar(self, suffix):
+        return self.path.with_name(self.path.stem + suffix)
+
+
+def value(key, scale=1):
+    return lambda row: float(row[key]) * scale
+
+
+def total(*keys, scale=1):
+    return lambda row: sum(float(row[k]) for k in keys) * scale
+
+
+def panel(campaign, title, ylabel, curves, log_y=False):
+    return dict(title=title, ylabel=ylabel, x=list(range(1, len(campaign.sizes)+1)),
+                ticks=campaign.sizes, xlabel='Configuration', log_y=log_y,
+                series=[campaign.series(*curve) for curve in curves])
+
+
+def phases(campaign, title, modes, components):
+    size = campaign.sizes[-1]
+    return dict(title=f'{title} — {size}', ylabel='Temps cumule (ms)',
+                bars=[label for label, mode in modes],
+                components=[dict(label=label, values=[campaign.mean(size, mode, extract) * 1000
+                            for _, mode in modes]) for label, extract in components])
+
+
+def draw(output, name, title, panels):
+    """Gnuplot multiplot ; les barres empilees representent des etapes disjointes."""
+    if not panels or len(panels) > 4:
+        raise ValueError('Une figure doit contenir entre un et quatre panneaux')
+    rows = 1 if len(panels) <= 2 else 2
+    cols = 1 if len(panels) == 1 else 2
+    width, height = 1800, 760 if rows == 1 else 1260
+    destination = output / (name + '.png')
+    temporary = output / ('.' + name + '.png')
+    blocks, commands = [], []
+    for index, item in enumerate(panels):
+        commands += ['unset logscale', 'unset label', 'set autoscale', 'set format x "%g"',
+                     'set format y "%g"', 'set grid ytics back lc rgb "#d9dce3"',
+                     'set border 3 lc rgb "#6b7280"', 'set tics nomirror',
+                     'set key outside bottom center horizontal maxcols 2 font ",11"',
+                     'set lmargin 11', 'set rmargin 3', 'set tmargin 3', 'set bmargin 5',
+                     'set title ' + gnuplot_string(item['title']),
+                     'set ylabel ' + gnuplot_string(item['ylabel'])]
+        if 'bars' in item:
+            block = f'data_{index}'
+            values = [' '.join([gnuplot_string(label)] + [f"{c['values'][i]:.12g}" for c in item['components']])
+                      for i, label in enumerate(item['bars'])]
+            blocks.append(f'${block} << EOD\n' + '\n'.join(values) + '\nEOD')
+            commands += ['set xlabel ""', 'set xrange [-0.7:' + str(len(item['bars'])-.3) + ']',
+                         'set yrange [0:*]', 'set xtics auto', 'set style data histograms',
+                         'set style histogram rowstacked', 'set style fill solid 0.85 border -1',
+                         'set boxwidth 0.55 relative']
+            plots = [f'${block} using {i+2}:xtic(1) title {gnuplot_string(c["label"])} lc rgb "{COLORS[i]}"'
+                     for i, c in enumerate(item['components'])]
+        else:
+            commands += ['set xlabel ' + gnuplot_string(item['xlabel']), 'set yrange [0:*]']
+            if len(item['series']) == 3:
+                commands += ['set key maxcols 3']
+            if item.get('log_y'):
+                commands += ['set logscale y', 'set yrange [*:*]', 'set format y "10^{%L}"']
+            if item.get('log_x'):
+                commands += ['set logscale x']
+            x = item['x']
+            margin = .06 * (max(x)-min(x)) if len(x) > 1 else .5
+            commands += [f'set xrange [{min(x)-margin if not item.get("log_x") else min(x)/1.12}:{max(x)+margin}]',
+                         'set xtics (' + ', '.join(f'{gnuplot_string(t)} {v}' for t,v in zip(item['ticks'], x)) + ')']
+            plots = []
+            for j, curve in enumerate(item['series']):
+                block = f'data_{index}_{j}'
+                errors = curve.get('errors')
+                values = [f'{a:.12g} {b:.12g}' + (f' {errors[i]:.12g}' if errors is not None else '')
+                          for i,(a,b) in enumerate(zip(x, curve['values']))]
+                blocks.append(f'${block} << EOD\n' + '\n'.join(values) + '\nEOD')
+                style = '1:2:3 with yerrorlines' if errors is not None else '1:2 with linespoints'
+                plots.append(f'${block} using {style} lw 2.5 pt {7+j*2} ps 1.0 lc rgb "{COLORS[j]}" title {gnuplot_string(curve["label"])}')
+        commands.append('plot ' + ', '.join(plots))
+    script = '\n'.join(blocks) + f'\nset terminal pngcairo size {width},{height} enhanced font "Sans,12"\n'
+    script += 'set output ' + gnuplot_string(str(temporary)) + '\n'
+    script += f'set multiplot layout {rows},{cols} rowsfirst title {gnuplot_string(title)} font ",17"\n'
+    script += '\n'.join(commands) + '\nunset multiplot\nunset output\n'
+    result = subprocess.run(['gnuplot'], input=script, text=True, capture_output=True)
+    if result.returncode or not temporary.exists():
+        temporary.unlink(missing_ok=True)
+        raise RuntimeError(f'Echec du trace {name} : {result.stderr[-2000:]}')
+    temporary.replace(destination)
+
+
+def workflow(campaign, data, adhoc, insitu):
+    if not campaign.has(adhoc, insitu):
+        return []
+    if data == 'snapshots':
+        compute, copies, write = 'stats_compute_s', 'stats_copy_s', 'stats_write_s'
+    else:
+        compute, copies, write = 'sismo_stats_s', 'sismo_stats_copy_s', 'sismo_stats_write_s'
+    modes = [('Ad-hoc', adhoc), ('In-situ', insitu)]
+    panels = [panel(campaign, 'Temps complet : simulation + post-traitement', 'Temps (s)',
+                    [(label, mode, value('workflow_s')) for label,mode in modes]),
+              panel(campaign, 'Volume des donnees et resultats', 'Volume (Mio)',
+                    [(label, mode, value('workflow_output_bytes', 1/2**20)) for label,mode in modes], log_y=True),
+              panel(campaign, 'Calcul : min, max, moyenne et variance', 'Temps cumule (ms)',
+                    [('Ad-hoc NumPy', adhoc, value('adhoc_analysis_s', 1000)),
+                     ('In-situ', insitu, value(compute, 1000))]),
+              phases(campaign, 'Sorties et analyse, hors calcul de la simulation', modes,
+                     [('Bruts : ecriture + lecture', total('snapshot_write_s', 'sismo_write_s', 'adhoc_read_s')),
+                      ('Calcul des statistiques', total('adhoc_analysis_s', compute)),
+                      ('Copies des resultats', value(copies)),
+                      ('Ecriture des resultats', total('post_write_s', write))])]
+    return panels
+
+
+def fft(campaign):
+    a, b = 'sismo_fft_adhoc', 'sismo_fft_insitu'
+    if not campaign.has(a,b): return []
+    overhead = lambda r: (float(r['adhoc_fft_prepare_s']) + float(r['sismo_stats_copy_s']) +
+                         max(0, float(r['fft_total_s'])-float(r['fft_compute_s'])-float(r['fft_write_s'])))
+    return [panel(campaign, 'Workflow : simulation + statistiques + FFT', 'Temps (s)',
+                  [('Ad-hoc NumPy',a,value('workflow_s')), ('In-situ cuFFT',b,value('workflow_s'))]),
+            panel(campaign, 'Volume des donnees et resultats', 'Volume (Kio)',
+                  [('Ad-hoc NumPy',a,value('workflow_output_bytes',1/1024)), ('In-situ cuFFT',b,value('workflow_output_bytes',1/1024))]),
+            panel(campaign, 'Calcul spectral NumPy / noyau cuFFT', 'Temps (microsecondes)',
+                  [('NumPy + amplitudes (double)',a,value('adhoc_fft_compute_s',1e6)), ('Noyau cuFFT (simple)',b,value('fft_compute_s',1e6))]),
+            phases(campaign, 'Traitement complet, hors calcul de la simulation', [('Ad-hoc',a),('In-situ',b)],
+                   [('Bruts : ecriture + lecture',total('sismo_write_s','adhoc_read_s')),
+                    ('Calcul : statistiques + FFT',lambda r: float(r['adhoc_analysis_s'])-float(r['adhoc_fft_prepare_s'])+float(r['sismo_stats_s'])+float(r['fft_compute_s'])),
+                    ('Preparation, plan et copies',overhead),
+                    ('Ecriture des resultats',total('post_write_s','sismo_stats_write_s','fft_write_s'))])]
+
+
+def slices(campaign):
+    a,b = 'visual_full','visual_slice'
+    if not campaign.has(a,b): return []
+    return [panel(campaign,'Workflow avec visualisation','Temps (s)',
+                  [('Volume complet',a,value('workflow_s')),('Slice',b,value('workflow_s'))]),
+            panel(campaign,'Volume brut, hors images','Volume (Mio)',
+                  [('Volume complet',a,value('snapshot_bytes',1/2**20)),('Slice',b,value('slice_bytes',1/2**20))]),
+            phases(campaign,'Preparation et E/S', [('Volume',a),('Slice',b)],
+                   [('Selection, extraction et copie',total('slice_setup_s','slice_extract_s','slice_copy_s')),
+                    ('Ecriture des donnees',total('snapshot_write_s','slice_write_s')),
+                    ('Lecture des donnees',value('adhoc_read_s'))]),
+            panel(campaign,'Rendu du meme plan 2D','Temps (s)',
+                  [('Depuis le volume',a,value('render_s')),('Depuis la slice',b,value('render_s'))])]
+
+
+def host_device(campaign):
+    if campaign.backend != 'gpu' or not campaign.has('snapshot_insitu_gpu','snapshot_insitu_cpu','snapshot_insitu_hostcopy'):
+        return []
+    a,b,c = 'snapshot_insitu_gpu','snapshot_insitu_hostcopy','snapshot_insitu_cpu'
+    return [panel(campaign,'Reduction GPU ou copie puis calcul CPU','Traitement cumule (ms)',
+                  [('Copie du champ + CPU',b,total('stats_compute_s','stats_copy_s',scale=1000)),
+                   ('GPU + copie du resultat',a,total('stats_compute_s','stats_copy_s',scale=1000))]),
+            panel(campaign,'Reduction GPU ou acces CPU via UVM','Traitement cumule (ms)',
+                  [('CPU via UVM',c,value('stats_compute_s',1000)),('GPU + copie du resultat',a,total('stats_compute_s','stats_copy_s',scale=1000))]),
+            panel(campaign,'Donnees logiques lues par l hote','Volume cumule (Kio)',
+                  [('Champ complet vers CPU',b,value('stats_transfer_bytes',1/1024)),('Resultats de reduction GPU',a,value('stats_transfer_bytes',1/1024))],log_y=True),
+            panel(campaign,'Impact sur le calcul de la simulation','Calcul de la simulation (ms)',
+                  [('Analyse CPU via UVM',c,value('compute_s',1000)),('Analyse GPU',a,value('compute_s',1000))])]
+
+
+def precision(campaign):
+    path = campaign.sidecar('_precision.csv')
+    if not path.exists(): return []
+    with path.open(newline='') as stream: rows = list(csv.DictReader(stream))
+    result=[]
+    for key, title, ylabel, scale in [('peak_error_norm','Maximum de pression','Erreur / max |p| (%)',100),
+            ('mean_error_norm','Moyenne temporelle','Erreur / max |p| (x 10^{-6})',1e6)]:
+        series=[]
+        for size in campaign.sizes:
+            values=sorted((r for r in rows if r['size']==size),key=lambda r:int(r['interval']))
+            series.append(dict(label=size, values=[float(r[key])*scale for r in values]))
+        x=[int(r['interval']) for r in values]
+        result.append(dict(title=title,ylabel=ylabel,x=x,ticks=x,xlabel='Intervalle entre snapshots (pas, echelle log)',
+                           log_x=True,series=series))
+    return result
+
+
+def scalability(campaigns, primary):
+    if not primary.has('scaling_cfl'): return []
+    x=[float(primary.groups[(s,'scaling_cfl')][0]['elements_per_axis']) for s in primary.sizes]
+    def curve(campaign,title,key,ylabel,exponent,scale=1):
+        measured=campaign.series('Mesure','scaling_cfl',value(key,scale))
+        return dict(title=title,ylabel=ylabel,x=x,ticks=x,xlabel='Elements par direction N',
+                    series=[measured,
+                            dict(label=f'Modele N^{exponent}',values=[measured['values'][0]*(n/x[0])**exponent for n in x])])
+    result=[curve(primary,'Nombre de pas sous CFL','steps','Pas de temps',1),
+            curve(primary,'Volume d un champ float32','nodes','Volume (Kio)',3,4/1024)]
+    for backend in ['cpu','gpu']:
+        campaign=campaigns.get(backend)
+        if campaign and campaign.has('scaling_cfl'):
+            result.append(curve(campaign,'Propagation sous CFL — '+backend.upper(),'compute_s','Temps de propagation (ms)',4,1000))
+    return result
+
+
+def compare_backends(campaigns):
+    if set(campaigns) != {'cpu','gpu'}: return []
+    cpu,gpu=campaigns['cpu'],campaigns['gpu']
+    result=[]
+    for mode,title,key in [('baseline','Propagation de l onde, hors sorties','compute_s'),
+            ('visual_full','Workflow complet avec visualisation','workflow_s')]:
+        if cpu.has(mode) and gpu.has(mode):
+            item=panel(cpu,title,'Temps (s)', [(f"CPU OpenMP, {cpu.rows[0]['threads']} threads",mode,value(key))])
+            item['series'].append(gpu.series('GPU CUDA',mode,value(key)))
+            if mode == 'baseline':
+                item['log_y'] = True
+                item['title'] += ' (echelle log)'
+            result.append(item)
+    return result
+
+
+def cleanup_legacy(output):
+    for name in ['cpu','gpu','cpu_vs_gpu']:
+        folder=output/name
+        manifest=folder/'figures.json'
+        if not manifest.exists(): continue
+        for filename in json.loads(manifest.read_text()).get('figures',[]):
+            if Path(filename).name == filename: (folder/filename).unlink(missing_ok=True)
+        (folder/'summary.csv').unlink(missing_ok=True)
+        manifest.unlink()
+        if not any(folder.iterdir()): folder.rmdir()
+
+
+def write_summary(output,campaigns):
+    rows=[]
+    for campaign in campaigns.values():
+        for (size,mode),group in sorted(campaign.groups.items()):
+            row=dict(backend=campaign.backend,size=size,mode=mode,repetitions=len(group))
+            for key in group[0]:
+                if key.endswith(('_s','_bytes')):
+                    values=[float(r[key]) for r in group]
+                    row.update({key+'_mean':statistics.mean(values),key+'_median':statistics.median(values),
+                                key+'_std':statistics.stdev(values) if len(values)>1 else 0})
+            rows.append(row)
+    with (output/'summary.csv').open('w',newline='') as stream:
+        writer=csv.DictWriter(stream,list(rows[0]),lineterminator='\n')
+        writer.writeheader();writer.writerows(rows)
 
 
 def main():
-    parser=argparse.ArgumentParser(description='TP2 : comparaisons de workflows a deux courbes')
-    parser.add_argument('--input',type=Path)
-    parser.add_argument('--compare',type=Path,nargs=2,metavar=('CPU_CSV','GPU_CSV'))
-    parser.add_argument('--output',type=Path)
-    parser.add_argument('--figures',help='Noms des figures sans extension, separes par des virgules')
+    parser=argparse.ArgumentParser(description=__doc__)
+    source=parser.add_mutually_exclusive_group(required=True)
+    source.add_argument('--input',type=Path)
+    source.add_argument('--compare',type=Path,nargs=2,metavar=('CPU_CSV','GPU_CSV'))
+    parser.add_argument('--output',type=Path,default=HERE/'plots')
+    parser.add_argument('--figures',help='Noms separes par des virgules : '+','.join(FIGURES))
     args=parser.parse_args()
-    if args.compare:
-        compare_backends(args.compare, args.output or HERE/'plots'/'cpu_vs_gpu')
-        return
-    if not args.input: parser.error('--input ou --compare requis')
-    with args.input.open(newline='') as stream: rows=list(csv.DictReader(stream))
-    if not rows: parser.error('Aucune mesure')
-    identities={(r['machine'],r['source_hash'],r['config_hash'],r['backend'],r['threads'],r['io_sync']) for r in rows}
-    if len(identities)!=1: parser.error('Mesures incompatibles')
-    if args.output is None: args.output = HERE/'plots'/rows[0]['backend']
-    selected = {v.removesuffix('.png') for v in args.figures.split(',')} if args.figures else None
-    if not selected:
-        manifest = args.output/'figures.json'
-        if manifest.exists():
-            for name in json.loads(manifest.read_text()).get('figures', []):
-                if Path(name).name == name: (args.output/name).unlink(missing_ok=True)
-    charts.PLOTS_DIR=args.output
+    paths=list(args.compare or [args.input])
+    if args.input and args.input.stem.endswith(('_cpu','_gpu')):
+        backend=args.input.stem.rsplit('_',1)[1]
+        sibling=args.input.with_name(args.input.stem.rsplit('_',1)[0]+('_gpu.csv' if backend=='cpu' else '_cpu.csv'))
+        if sibling.exists(): paths.append(sibling)
+    campaigns={}
+    for path in paths:
+        campaign=Campaign(path)
+        if campaign.backend in campaigns: parser.error('Deux campagnes du meme backend')
+        campaigns[campaign.backend]=campaign
+    if len({c.identity for c in campaigns.values()}) != 1: parser.error('Parametres, sources ou machines differents')
+    if len({tuple(c.sizes) for c in campaigns.values()}) != 1: parser.error('Tailles CPU et GPU differentes')
+    primary=campaigns.get('gpu',campaigns.get('cpu'))
+    selected={name.removesuffix('.png') for name in args.figures.split(',')} if args.figures else set(FIGURES)
+    if selected-set(FIGURES): parser.error('Figures inconnues : '+','.join(sorted(selected-set(FIGURES))))
     args.output.mkdir(parents=True,exist_ok=True)
-    sizes=sorted({r['size'] for r in rows},key=lambda s:next(int(r['nodes']) for r in rows if r['size']==s))
-    groups=defaultdict(list)
-    for r in rows: groups[(r['size'],r['mode'])].append(r)
-    profile=rows[0]['profile']+' '+rows[0]['backend'].upper()
-    summary=[]
-    metrics=['workflow_s','simulation_wall_s','compute_s','total_output_bytes','adhoc_read_s','adhoc_analysis_s','stats_compute_s','stats_copy_s','stats_write_s','sismo_stats_s','sismo_stats_copy_s','sismo_stats_write_s','snapshot_write_s','sismo_write_s','slice_extract_s','slice_copy_s','slice_write_s','render_s','stats_transfer_bytes','receiver_trace_bytes','receiver_stats_memory_bytes']
-    for (size,mode),repetitions in sorted(groups.items()):
-        item=dict(size=size,mode=mode,repetitions=len(repetitions))
-        for key in metrics:
-            values=[float(r[key]) for r in repetitions]
-            item.update({key+'_mean':statistics.mean(values),key+'_median':statistics.median(values),
-                         key+'_std':statistics.stdev(values) if len(values)>1 else 0})
-        summary.append(item)
-    with (args.output/'summary.csv').open('w',newline='') as stream:
-        writer=csv.DictWriter(stream,list(summary[0]),lineterminator='\n'); writer.writeheader(); writer.writerows(summary)
-    plotted=[]
-    def line(name,title,ylabel,curves,zero_based=True):
-        if selected is not None and name.removesuffix('.png') not in selected: return
-        series,errors=[],[]
-        for label,mode,extract in curves:
-            means,stds=[],[]
-            for size in sizes:
-                source=groups.get((size,mode))
-                if not source: return
-                numbers=[extract(r) for r in source]
-                means.append(statistics.mean(numbers)); stds.append(statistics.stdev(numbers) if len(numbers)>1 else 0)
-            series.append((label,means)); errors.append(stds)
-        charts.plot_lines(name,title+' — '+profile,ylabel,range(1,len(sizes)+1),series,
-            errors=errors,x_tick_labels=sizes,x_label='Configuration',zero_based=zero_based)
-        plotted.append(name)
-    f=lambda key:lambda r:float(r[key])
-    mb=lambda r:float(r.get('workflow_output_bytes', r['total_output_bytes']))/2**20
-    for data,adhoc,insitu in [('snapshots','snapshot_adhoc','snapshot_insitu_gpu'),('sismos','sismo_adhoc','sismo_insitu')]:
-        line(data+'_workflow.png','Workflow numerique '+data,'Temps (s)', [('Ad-hoc binaire',adhoc,f('workflow_s')),('In-situ',insitu,f('workflow_s'))])
-        line(data+'_storage.png','Volume des sorties '+data,'Volume (Mio)', [('Ad-hoc binaire',adhoc,mb),('In-situ',insitu,mb)])
-        line(data+'_analysis.png','Calcul des analyses '+data,'Temps (s)', [('Ad-hoc CPU',adhoc,f('adhoc_analysis_s')),('In-situ',insitu,f('stats_compute_s' if data=='snapshots' else 'sismo_stats_s'))])
-        line(data+'_io.png','Ecritures lectures et copies '+data,'Temps (s)',
-            [('Donnees brutes',adhoc,lambda r:float(r['snapshot_write_s'])+float(r['sismo_write_s'])+float(r['adhoc_read_s'])),
-             ('Resultats in-situ',insitu,lambda r:float(r['stats_copy_s'])+float(r['stats_write_s'])+float(r['sismo_stats_copy_s'])+float(r['sismo_stats_write_s']))])
-        baseline={(r['size'],r['run']):r for r in rows if r['mode']=='baseline'}
-        if all((r['size'],r['run']) in baseline for r in rows if r['mode'] in (adhoc,insitu)):
-            line(data+'_overhead.png','Surcout du traitement '+data,'Temps ajoute au workflow (s)',
-                 [('Ad-hoc binaire',adhoc,lambda r:float(r['workflow_s'])-float(baseline[(r['size'],r['run'])]['workflow_s'])),
-                  ('In-situ',insitu,lambda r:float(r['workflow_s'])-float(baseline[(r['size'],r['run'])]['workflow_s']))],zero_based=False)
-    line('stats_gpu_vs_hostcopy.png','Analyse sur device ou copie puis analyse CPU','Temps (s)',
-        [('Reduction device','snapshot_insitu_gpu',lambda r:float(r['stats_compute_s'])+float(r['stats_copy_s'])),
-         ('Copie + Welford CPU','snapshot_insitu_hostcopy',lambda r:float(r['stats_compute_s'])+float(r['stats_copy_s']))])
-    line('stats_gpu_vs_uvm_cpu.png','Analyse device ou parcours CPU UVM','Temps (s)',
-        [('Reduction device','snapshot_insitu_gpu',lambda r:float(r['stats_compute_s'])+float(r['stats_copy_s'])),
-         ('Parcours CPU UVM','snapshot_insitu_cpu',f('stats_compute_s'))])
-    line('stats_hostcopy_workflow.png','Impact du mode d analyse sur la simulation','Workflow (s)',
-        [('Reduction device','snapshot_insitu_gpu',f('workflow_s')),('Copie + Welford CPU','snapshot_insitu_hostcopy',f('workflow_s'))])
-    line('stats_transfer_bytes.png','Donnees logiques renvoyees vers l hote','Octets',
-        [('Resultat de reduction','snapshot_insitu_gpu',f('stats_transfer_bytes')),('Champ complet','snapshot_insitu_hostcopy',f('stats_transfer_bytes'))])
-    line('sismo_fft_workflow.png','FFT des sismogrammes : workflow complet','Temps (s)',
-         [('Binaire puis NumPy CPU','sismo_fft_adhoc',f('workflow_s')),('In-situ cuFFT','sismo_fft_insitu',f('workflow_s'))])
-    line('sismo_fft_compute.png','FFT seule : bibliotheques et precisions differentes','Calcul FFT (s)',
-         [('NumPy CPU','sismo_fft_adhoc',f('adhoc_fft_compute_s')),('cuFFT GPU','sismo_fft_insitu',f('fft_compute_s'))])
-    line('sismo_fft_setup.png','FFT : preparation et cout complet','Temps (s)',
-         [('Allocation + plan cuFFT','sismo_fft_insitu',f('fft_plan_s')),('Traitement cuFFT complet','sismo_fft_insitu',f('fft_total_s'))])
-    line('sismo_fft_storage.png','FFT : volume total du workflow','Volume (Mio)',
-         [('Donnees brutes + resultats','sismo_fft_adhoc',mb),('Resultats in-situ','sismo_fft_insitu',mb)])
-    for metric,name,label in [('workflow_s','slice_workflow.png','Temps total (s)'),('total_output_bytes','slice_storage.png','Volume (Mio)'),('render_s','slice_render.png','Rendu (s)'),('adhoc_read_s','slice_read.png','Lecture (s)')]:
-        extract=mb if metric=='total_output_bytes' else f(metric)
-        line(name,'Visualisation depuis volume ou slice',label,[('Volume binaire','visual_full',extract),('Slice binaire','visual_slice',extract)])
-    full={(r['size'],r['run']):r for r in rows if r['mode']=='visual_full'}
-    if all((r['size'],r['run']) in full for r in rows if r['mode']=='visual_slice'):
-        line('slice_extraction_vs_write_gain.png','Cout de la slice et economie d ecriture','Temps (s)',
-            [('Selection + extraction + copie','visual_slice',lambda r:float(r['slice_setup_s'])+float(r['slice_extract_s'])+float(r['slice_copy_s'])),
-             ('Ecriture economisee','visual_slice',lambda r:float(full[(r['size'],r['run'])]['snapshot_write_s'])-float(r['slice_write_s']))],zero_based=False)
-    precision=args.input.with_name(args.input.stem+'_precision.csv')
-    if precision.exists():
-        with precision.open(newline='') as stream: prec=list(csv.DictReader(stream))
-        for size in sizes:
-            if selected is not None and 'precision_'+size not in selected: continue
-            values=[r for r in prec if r['size']==size]
-            if not values: continue
-            x=[int(r['interval']) for r in values]
-            charts.plot_lines('precision_'+size+'.png','Erreur d echantillonnage — '+size,'Erreur / max |p|',x,
-                [('Maximum',[float(r['peak_error_norm']) for r in values]),('Moyenne temporelle',[float(r['mean_error_norm']) for r in values])],x_label='Intervalle entre snapshots (pas)')
-            plotted.append('precision_'+size+'.png')
-    line('scalability_steps.png','Nombre de pas sous condition CFL','Pas de temps',
-        [('Mesure','scaling_cfl',f('steps')),
-         ('Modele proportionnel a N','scaling_cfl',lambda r:statistics.mean(float(a['steps']) for a in groups[(sizes[0],'scaling_cfl')])*float(r['elements_per_axis'])/float(groups[(sizes[0],'scaling_cfl')][0]['elements_per_axis']))])
-    line('scalability_compute.png','Calcul sous condition CFL : mesure et ordre N puissance 4','Temps (s)',
-        [('Mesure','scaling_cfl',f('compute_s')),
-         ('Modele N puissance 4','scaling_cfl',lambda r:statistics.mean(float(a['compute_s']) for a in groups[(sizes[0],'scaling_cfl')])*(float(r['elements_per_axis'])/float(groups[(sizes[0],'scaling_cfl')][0]['elements_per_axis']))**4)])
-    validation=args.input.with_name(args.input.stem+'_validation.csv')
-    if validation.exists():
-        with validation.open(newline='') as stream: valid=list(csv.DictReader(stream))
-        for data in ('snapshots','sismos'):
-            if selected is not None and data+'_validation' not in selected: continue
-            series=[]
-            for metric,label in [('max','Maximum'),('mean','Moyenne')]:
-                values=[next(float(r['max_error_norm']) for r in valid if r['size']==size and r['data']==data and r['statistic']==metric) for size in sizes]
-                series.append((label,values))
-            name=data+'_validation.png'
-            charts.plot_lines(name,'Ecart numerique ad-hoc / in-situ — '+data+' — '+profile,'Erreur normalisee',range(1,len(sizes)+1),series,x_tick_labels=sizes,x_label='Configuration')
-            plotted.append(name)
-        if any(r['data']=='fft' for r in valid) and (selected is None or 'fft_validation' in selected):
-            series=[]
-            for metric,label in [('amplitude','Amplitude'),('frequency_hz','Frequences')]:
-                series.append((label,[next(float(r['max_error_norm']) for r in valid if r['size']==size and r['data']=='fft' and r['statistic']==metric) for size in sizes]))
-            charts.plot_lines('fft_validation.png','Ecart NumPy CPU / cuFFT GPU','Erreur normalisee',range(1,len(sizes)+1),series,x_tick_labels=sizes,x_label='Configuration')
-            plotted.append('fft_validation.png')
-    if selected is not None and not plotted:
-        parser.error('Aucune figure demandee ne correspond aux modes mesures')
-    manifest = args.output/'figures.json'
-    sources = {}
-    if selected is not None and manifest.exists():
-        previous = json.loads(manifest.read_text())
-        sources.update(previous.get('sources', {name: previous.get('source') for name in previous.get('figures', [])}))
-    sources.update({name: str(args.input) for name in plotted})
-    manifest.write_text(json.dumps(dict(source=str(args.input),profile=profile,figures=sorted(sources),sources=sources),indent=2)+'\n')
-    print(f'{len(plotted)} figures : {args.output}')
+    definitions={
+        'snapshots':('Snapshots : min, max, moyenne et variance — ad-hoc / in-situ',lambda:workflow(primary,'snapshots','snapshot_adhoc','snapshot_insitu_gpu')),
+        'sismogrammes':('Sismogrammes : min, max, moyenne et variance — ad-hoc / in-situ',lambda:workflow(primary,'sismos','sismo_adhoc','sismo_insitu')),
+        'fft':('Sismogrammes : min, max, moyenne, variance et FFT — ad-hoc / in-situ',lambda:fft(primary)),
+        'slices':('Meme visualisation : volume complet ou slice',lambda:slices(primary)),
+        'statistiques_cpu_gpu':('Simulation CUDA : min, max, moyenne et variance sur GPU ou CPU',lambda:host_device(primary)),
+        'precision':('Effet de l intervalle entre snapshots',lambda:precision(primary)),
+        'scalabilite':('Scalabilite a ordre fixe : mesures et modeles',lambda:scalability(campaigns,primary)),
+        'cpu_vs_gpu':('CPU / GPU : propagation de l onde et workflow avec visualisation',lambda:compare_backends(campaigns))}
+    generated=[]
+    profile=primary.identity[-1]+' '+primary.backend.upper()
+    for name in FIGURES:
+        if name not in selected: continue
+        title,builder=definitions[name]
+        panels=builder()
+        if not panels: continue
+        figure_profile = primary.identity[-1]+' CPU / GPU' if name in ('scalabilite','cpu_vs_gpu') and len(campaigns)==2 else profile
+        draw(args.output,name,title+' — '+figure_profile,panels)
+        generated.append(name+'.png')
+    if not generated: parser.error('Aucune figure disponible pour les modes mesures')
+    write_summary(args.output,campaigns)
+    manifest_path=args.output/'figures.json'
+    manifest=json.loads(manifest_path.read_text()) if args.figures and manifest_path.exists() else {}
+    sources=manifest.get('sources',{})
+    sources.update({name:[str(c.path) for c in campaigns.values()] for name in generated})
+    manifest.update(figures=sorted(sources),sources=sources,primary_backend=primary.backend,
+                    machine=primary.identity[0],profile=primary.identity[-1])
+    manifest_path.write_text(json.dumps(manifest,indent=2)+'\n')
+    if not args.figures: cleanup_legacy(args.output)
+    print(f'{len(generated)} figures regroupees : {args.output}')
 
 
-if __name__=='__main__': main()
+if __name__=='__main__':
+    main()
