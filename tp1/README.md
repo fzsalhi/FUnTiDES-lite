@@ -24,7 +24,6 @@ La compilation GPU doit être faite sur le serveur, avec sa configuration CUDA/K
 
 ## Lancer les benchmarks
 
-Les références reprennent les maillages du précédent benchmark TP1 (`run_two.py`). Il faut garder ces paramètres et la même machine pour les comparaisons ultérieures, ou modifier explicitement les trois tailles avant d'établir la référence.
 
 | Configuration | Éléments par axe | Ordre | Nœuds par axe | Nombre de nœuds |
 |---|---:|---:|---:|---:|
@@ -93,7 +92,7 @@ Les chronos C++ utilisent une horloge monotone. Un `Kokkos::fence()` termine les
 
 Par défaut, `--io-sync buffered` mesure les écritures vers le cache du système. `--io-sync fsync` attend aussi un `fsync` de chaque fichier ; ce temps est inclus dans l'écriture et renseigné séparément comme sous-ensemble, sans le compter deux fois. La lecture suit l'écriture : le cache OS n'est pas vidé, ce n'est pas une mesure de lecture à froid. Le débit affiché est un débit logique du workflow, pas un débit matériel du disque.
 
-Les figures présentent les moyennes et écarts-types échantillonnaux ; `summary.csv` contient aussi médianes, minimums, maximums et coefficients de variation. Les ratios CSV/binaire et CPU/GPU utilisent les médianes. `--no-render` retire le rendu des images : ne pas comparer cette campagne à une campagne qui le mesure.
+Les figures présentent les moyennes et écarts-types des répétitions du benchmark. Pour ces mesures de temps et de volume, `summary.csv` contient aussi les médianes, minimums, maximums et coefficients de variation. Ces minimums et maximums décrivent les mesures du benchmark, pas les valeurs du champ de pression. Les ratios CSV/binaire et CPU/GPU utilisent les médianes. `--no-render` retire le rendu des images : ne pas comparer cette campagne à une campagne qui le mesure.
 
 Pour régénérer les figures ou rassembler deux campagnes compatibles CPU et GPU :
 
@@ -101,12 +100,5 @@ Pour régénérer les figures ou rassembler deux campagnes compatibles CPU et GP
 python3 tp1/benchmarks/plot_benchmarks.py --input chemin_cpu.csv chemin_gpu.csv
 ```
 
-Le script refuse de mélanger machines, paramètres, code C++, politique de synchronisation ou activation du rendu différents. Aucun résultat GPU n'est produit en l'absence de mesures GPU. Les anciennes mesures du groupe sont conservées, mais leur instrumentation ne doit pas être confondue avec celle des nouvelles campagnes.
+Le script refuse de mélanger machines, paramètres, code C++, politique de synchronisation ou activation du rendu différents. Aucun résultat GPU n'est produit en l'absence de mesures GPU.
 
-À 19 milliards de nœuds, la pression float32 seule représente **76 Go par snapshot** (70,78 Gio). Les coordonnées représentent **228 Go**, une seule fois : K snapshots binaires occupent environ **228 + 76K Go**, hors petits JSON. Le CSV répète les coordonnées à chaque sortie ; son volume dépend de la représentation décimale et se mesure empiriquement. Une extrapolation de temps demande les débits réels du serveur.
-
-## État local
-
-La compilation et les sorties CPU ont été vérifiées : égalité des float32 CSV/binaire, plusieurs récepteurs dont un sur le bord du domaine, concordance des pressions et des temps entre récepteurs et snapshots, volumes et chronos, écriture avec `fsync`. `benchmarks_validation_cpu.csv` teste la chaîne complète avec trois petites tailles et trois répétitions ; ses résultats ne remplacent pas les références S/M/L sur le serveur. Les mesures GPU et la comparaison CPU/GPU restent à exécuter sur ce serveur.
-
-Sur la plus grande taille de cette validation (17³ nœuds, six snapshots), le binaire écrit 0,170 Mio contre 0,743 Mio en CSV, soit 4,38 fois moins. Les médianes d'écriture sont 0,0021 s et 0,1049 s ; celles de lecture sont 0,0026 s et 0,1090 s. Le workflow complet passe seulement de 2,52 s à 2,24 s : le rendu des images domine à cette taille. Pour les sismogrammes seuls, les volumes baissent aussi, mais le workflow reste proche de 0,57 s dans les deux formats. Ces chiffres illustrent la chaîne locale ; ils ne prédisent pas les performances du serveur GPU.
