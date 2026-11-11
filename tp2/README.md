@@ -1,11 +1,13 @@
 # TP2 — Ad-hoc et in-situ
 
-On compare les deux méthodes avec les mêmes analyses et les mêmes instants de sortie. Les données brutes sont en binaire float32, comme au TP1. Les mesures sont enregistrées en CSV et JSON.
+Comparaison des workflows ad-hoc et in-situ avec les mêmes analyses et les mêmes instants de sortie. Les données brutes sont en binaire float32, comme au TP1. Les mesures sont enregistrées en CSV et JSON.
 
 ## Analyses
 
 Pour les snapshots : min, max, moyenne et variance.
 Pour les sismogrammes : les mêmes quatre statistiques, avec la FFT en plus après retrait de la moyenne. Les snapshots n’ont pas de FFT.
+
+Les statistiques d’un snapshot portent sur tous les nœuds à un instant donné. Celles d’un sismogramme portent sur tous les instants enregistrés par un récepteur. Les figures de performance chronomètrent le calcul des statistiques ; elles ne représentent pas directement leurs valeurs.
 
 Le maximum suit l’amplitude de l’onde, la variance sa dispersion et le spectre des sismogrammes leur contenu fréquentiel.
 
@@ -15,7 +17,7 @@ Un histogramme en flux demanderait des classes fixées à l’avance. Les quanti
 
 ## Configurations
 
-On garde les configurations du TP1 sur le même serveur.
+Les configurations du TP1 sont conservées sur le même serveur.
 
 | Taille | Éléments par axe | Ordre | Nœuds |
 |---|---:|---:|---:|
@@ -26,6 +28,18 @@ On garde les configurations du TP1 sur le même serveur.
 Domaine : 2 000 m par direction. Pas de temps : 0,001 s. Durée demandée : 1,5 s. Un snapshot et une analyse spatiale tous les 50 pas. Les récepteurs de `data/receivers.csv` sont échantillonnés à chaque pas.
 
 Le CPU utilise OpenMP avec 4 threads. Le GPU utilise Kokkos CUDA pour la simulation et cuFFT pour les FFT. Le cas `scaling_cfl` ajuste le pas de temps pour étudier la scalabilité ; il est séparé des comparaisons à pas fixe.
+
+| Données | Format |
+|---|---|
+| Pressions des snapshots 3D et des slices 2D | Binaire float32 `.bin`, avec métadonnées `.json` |
+| Coordonnées des nœuds | `coords.bin` |
+| Signaux bruts des récepteurs | Binaire float32 `.bin`, avec métadonnées `.json` |
+| Min, max, moyenne, variance et spectres FFT | `.csv` |
+| Temps et tailles des fichiers | `.csv` et `.json` |
+| Positions des récepteurs en entrée | `data/receivers.csv` |
+| Figures et images de pression | `.png` |
+
+Le TP2 utilise le binaire pour toutes les sorties brutes. La comparaison du binaire avec le CSV appartient au TP1.
 
 ## Lancement sur le serveur
 
@@ -48,17 +62,30 @@ La configuration CUDA conserve le compilateur et l’architecture du build TP1. 
 
 ## Comparaison CPU / GPU
 
-Les statistiques des snapshots ont trois modes :
+Dans `statistiques_cpu_gpu.png`, la propagation de l’onde reste sur GPU. Seul l’emplacement du calcul de min, max, moyenne et variance change. Trois exécutions séparées utilisent les mêmes paramètres de simulation :
 
-| Mode | Traitement |
-|---|---|
-| `gpu` | Réduction sur le GPU, puis copie du petit résultat |
-| `cpu` | Parcours du champ depuis le CPU via la mémoire unifiée |
-| `hostcopy` | Copie du champ vers le CPU, puis calcul ; les deux temps sont séparés |
+| Mode | Calcul des statistiques | Données accessibles au CPU |
+|---|---|---|
+| `gpu` | Réduction sur GPU sur le champ produit par le solveur CUDA | Copie du petit résumé de statistiques |
+| `hostcopy` | Copie explicite du champ dans un tableau CPU, puis calcul CPU séquentiel | Tout le champ de pression ; copie et calcul chronométrés séparément |
+| `cpu` | Lecture du tableau partagé par une boucle CPU séquentielle | Tout le champ ; CUDA gère automatiquement les déplacements de mémoire |
 
-Le GPU renvoie une structure de statistiques. Les deux traitements CPU lisent tout le champ, soit 4 octets par nœud. Ce sont des volumes logiques, pas des mesures du trafic PCIe. Dans le mode `cpu`, les migrations UVM sont incluses dans le parcours ; un temps de copie nul ne veut pas dire qu’il n’y a aucun transfert. Le retour des données vers le GPU peut aussi ralentir le pas suivant.
+Le champ `pnGlobal` est alloué en mémoire unifiée CUDA, appelée UVM. Le solveur CUDA le met à jour à chaque pas ; la réduction GPU réutilise directement ce champ. L’accès depuis le CPU reste possible, mais peut déclencher une migration de pages. Après cet accès CPU, le GPU peut devoir récupérer les pages pour poursuivre la propagation.
 
-Pour les FFT, on compare la lecture du binaire suivie de NumPy avec cuFFT pendant la simulation. Avec CUDA, le centrage et la FFT restent sur GPU ; seul le spectre est rapatrié pour l’écriture. Les temps du plan, de la préparation, de la FFT, des transferts et de l’écriture sont séparés.
+La référence GPU est la même dans les panneaux A et B. Les quatre panneaux représentent trois méthodes observées sous quatre angles :
+
+| Panneau | Mesure | Comparaison |
+|---|---|---|
+| A — haut gauche | Temps des statistiques et des copies associées | GPU + retour des résultats / copie explicite du champ + statistiques CPU |
+| B — haut droite | Temps des statistiques, avec les migrations implicites côté CPU | GPU + retour des résultats / lecture CPU en mémoire unifiée |
+| C — bas gauche | Quantité logique de données renvoyées au CPU | Résumés de statistiques GPU / copies explicites du champ complet |
+| D — bas droite | Temps de propagation de l’onde sur GPU, hors statistiques et sorties | Statistiques sur GPU / statistiques CPU en mémoire unifiée |
+
+Les panneaux A et B cumulent les 30 analyses de chaque simulation de référence. C représente le même cumul en Kio. D cumule les 1 499 pas de propagation GPU. Pour L, les moyennes sont de 2,8 ms pour l’analyse GPU avec retour des résultats, 10,1 ms pour la copie puis l’analyse CPU, et 32 ms pour l’accès CPU en mémoire unifiée. La propagation GPU prend environ 62,6 ms avec l’analyse GPU, contre 99,7 ms avec l’analyse CPU en mémoire unifiée.
+
+Les volumes sont logiques, pas des mesures du trafic PCIe. Dans le mode `cpu`, les migrations UVM sont incluses dans le parcours ; `stats_copy_s=0` signifie qu’aucune copie distincte n’a été chronométrée. Le temps D peut aussi inclure les migrations nécessaires au retour sur GPU. Les quatre threads OpenMP concernent la simulation CPU de `cpu_vs_gpu.png` ; les analyses sur l’hôte de `statistiques_cpu_gpu.png` sont séquentielles.
+
+Pour les FFT, la comparaison porte sur la lecture du binaire suivie de NumPy et sur cuFFT pendant la simulation. Avec CUDA, le centrage et la FFT restent sur GPU ; seul le spectre est rapatrié pour l’écriture. Les temps du plan, de la préparation, de la FFT, des transferts et de l’écriture sont séparés.
 
 Les deux versions calculent `dt × abs(rfft(signal - moyenne))`, sans doubler les fréquences positives. NumPy travaille en double précision pour la FFT, cuFFT en simple précision. Les différences de calcul ne viennent donc pas uniquement du workflow. Écrire tout le spectre peut aussi coûter plus de place que garder les traces binaires.
 
@@ -66,19 +93,27 @@ Les deux versions calculent `dt × abs(rfft(signal - moyenne))`, sans doubler le
 
 Les options sont `--slice-interval`, `--slice-plane=XY|XZ|YZ`, `--slice-position` en mètres et `--slice-folder`. Les slices peuvent être écrites avec ou sans snapshots complets.
 
-On choisit le plan GLL le plus proche de la position demandée, sans interpolation. La position réelle est conservée dans le JSON. Le rendu utilise les coordonnées physiques des nœuds, une palette divergente et une normalisation locale symétrique autour de zéro. La coupe du volume complet et la slice utilisent le même rendu.
+Le snapshot complet contient le champ de pression 3D à un instant donné. Une slice contient seulement un plan 2D de ce champ. La propagation reste calculée dans tout le domaine dans les deux cas. Pour L, le snapshot contient 68 921 pressions, contre 1 681 pour la slice XY à z = 1 000 m.
 
-La sélection initiale, l’extraction, la copie, l’écriture, la lecture et le rendu sont chronométrés. On compare leur coût total avec celui d’une sortie complète. Une slice économise des données mais empêche de choisir un autre plan après la simulation.
+Le plan GLL le plus proche de la position demandée est retenu, sans interpolation. La position réelle est conservée dans le JSON. Le rendu utilise les coordonnées physiques des nœuds, une palette divergente et une normalisation locale symétrique autour de zéro.
+
+Dans le cas snapshot, le script relit le champ 3D puis sélectionne le plan. Dans le cas slice, la simulation sélectionne ce plan avant l’écriture, puis le script relit seulement les valeurs 2D. La même image 2D est produite après la simulation dans les deux cas. « Taille des fichiers » désigne l’espace disque occupé, tandis que « champ 3D » désigne les données spatiales de pression.
+
+La sélection initiale, l’extraction, la copie, l’écriture, la lecture et le rendu sont chronométrés. Leur coût total est comparé à celui d’une sortie complète. Une slice économise des données mais empêche de choisir un autre plan après la simulation.
+
+La figure `slices.png` compare les coûts. Le contrôle de précision est enregistré dans `_validation.csv` : l’écart mesuré entre la slice et les mêmes nœuds du champ complet est nul. Cette égalité concerne le plan retenu ; aucune donnée n’est conservée en dehors de ce plan. La figure `precision.png` étudie l’échantillonnage temporel des snapshots, pas la différence entre slice et champ 3D.
 
 ## Mesures et précision
 
 `workflow_s` comprend la simulation et son post-traitement. Pour les analyses numériques : lecture, calcul et écriture des résultats. Pour `visual_full` et `visual_slice` : la visualisation est également incluse.
 
+Chaque famille correspond à des exécutions distinctes. Le workflow sismogrammes calcule toujours la propagation 3D, mais n’écrit pas de snapshots et ne calcule pas leurs statistiques. Le cas FFT ajoute le calcul spectral aux statistiques des récepteurs. Le workflow de visualisation produit des images du plan choisi. « Complet » désigne toutes les étapes du traitement étudié, pas l’activation simultanée de toutes les sorties.
+
 Les temps de calcul, d’écriture, de lecture, d’analyse et de rendu sont séparés. Les graphiques de stockage comptent les données et les résultats, sans les journaux du benchmark. Les temps détaillés sont déjà inclus dans le total : il ne faut pas les additionner une seconde fois au workflow.
 
 Les fichiers sont fermés sans forcer leur persistance sur disque (`buffered`, comme au TP1). Les lectures peuvent profiter du cache système. Le paramètre `io_sync` du fichier de configuration permet de mesurer les écritures de simulation avec `fsync`. Les sorties Python restent buffered. Les figures donnent la moyenne et l’écart-type ; le résumé contient aussi la médiane.
 
-La comparaison de temps garde l’intervalle 50 des deux côtés. Pour la précision, une exécution analyse tous les pas, puis on extrait les intervalles 1, 2, 5, 10, 20, 50 et 100. On compare le maximum de pression et la moyenne temporelle des moyennes spatiales. L’erreur est divisée par le maximum global de |p|, déduit des min/max. Un pic entre deux sorties peut être manqué par les snapshots. Les sismogrammes voient tous les pas dans les deux méthodes : leur échantillonnage est identique.
+La comparaison de temps garde l’intervalle 50 des deux côtés. Pour la précision, une exécution analyse tous les pas ; les intervalles 1, 2, 5, 10, 20, 50 et 100 sont ensuite extraits. Le maximum de pression et la moyenne temporelle des moyennes spatiales sont comparés à la référence complète. L’erreur est divisée par le maximum global de |p|, déduit des min/max. Un pic entre deux sorties peut être manqué par les snapshots. Les sismogrammes voient tous les pas dans les deux méthodes : leur échantillonnage est identique.
 
 Une vérification par taille compare les statistiques et les spectres sur les mêmes données. Les valeurs et coordonnées des slices sont aussi comparées au snapshot complet. Les écarts sont enregistrés dans `_validation.csv` ; un dépassement de tolérance arrête la campagne.
 
@@ -86,18 +121,18 @@ Une vérification par taille compare les statistiques et les spectres sur les m�
 
 Les données de la campagne du 11 novembre 2026 sont dans `benchmarks/results/` : 180 mesures CPU et 195 mesures GPU, sur le serveur `jessica` (Core Ultra 9 285, RTX 4000 Ada). Chaque cas comporte cinq mesures, après une chauffe exclue des résultats. Les 60 contrôles numériques enregistrés dans les CSV de validation passent, avec des slices identiques au sous-ensemble correspondant du champ complet.
 
-Les figures sont regroupées directement dans `benchmarks/plots/`. Une image rassemble les mesures qui répondent à la même question, avec deux ou quatre panneaux. Les analyses ad-hoc/in-situ utilisent la campagne CUDA ; les deux campagnes interviennent dans les comparaisons CPU/GPU et la scalabilité. Les résultats OpenMP restent disponibles dans les CSV et dans `plots/summary.csv`.
+Les figures sont regroupées directement dans `benchmarks/plots/`. Une image rassemble les mesures qui répondent à la même question, avec deux ou quatre panneaux. Dans les images à quatre panneaux, A est en haut à gauche, B en haut à droite, C en bas à gauche et D en bas à droite. Dans les images à deux panneaux, A est à gauche et B à droite. Les analyses ad-hoc/in-situ utilisent la campagne CUDA ; les deux campagnes interviennent dans les comparaisons CPU/GPU et la scalabilité. Les résultats OpenMP restent disponibles dans les CSV et dans `plots/summary.csv`.
 
 | Figure | Panneaux | Contenu et comparaisons |
 |---|---:|---|
-| `snapshots.png` | 4 | Temps complet, volume, calcul des quatre statistiques et décomposition des sorties/analyses : ad-hoc binaire / in-situ |
-| `sismogrammes.png` | 4 | Même lecture pour les récepteurs : temps complet, volume, calcul des statistiques et décomposition des coûts |
-| `fft.png` | 4 | Workflow, volume, calcul spectral et décomposition du traitement : NumPy ad-hoc / cuFFT in-situ |
-| `slices.png` | 4 | Workflow avec visualisation, volume brut, préparation/E/S et rendu : volume complet / slice |
-| `statistiques_cpu_gpu.png` | 4 | Réduction GPU / copie puis calcul CPU ; GPU / accès CPU via UVM ; volumes logiques transférés ; impact sur le calcul de la simulation |
-| `precision.png` | 2 | Erreur sur le maximum et erreur sur la moyenne temporelle, avec une courbe par taille S/M/L |
-| `scalabilite.png` | 4 | Nombre de pas, volume d’un champ, calcul CPU et calcul GPU, chacun confronté à son modèle |
-| `cpu_vs_gpu.png` | 2 | Calcul seul puis workflow avec visualisation du volume, avec une courbe CPU et une courbe GPU |
+| `snapshots.png` | 4 | A : workflow des snapshots ; B : taille des fichiers ; C : calcul de min, max, moyenne et variance ; D : décomposition des coûts pour L. Deux méthodes : ad-hoc binaire / in-situ. |
+| `sismogrammes.png` | 4 | A : workflow des récepteurs ; B : taille des fichiers ; C : calcul des quatre statistiques temporelles ; D : décomposition des coûts pour L. Deux méthodes : ad-hoc binaire / in-situ, sans FFT. |
+| `fft.png` | 4 | A : workflow des récepteurs avec statistiques et FFT ; B : taille des fichiers ; C : calcul spectral NumPy / noyau cuFFT ; D : traitement détaillé pour L, plan et écritures compris. |
+| `slices.png` | 4 | A : workflow avec image 2D ; B : fichiers du champ 3D / fichiers du plan 2D ; C : préparation et E/S pour L ; D : rendu de la même image 2D. |
+| `statistiques_cpu_gpu.png` | 4 | A : GPU / CPU avec copie explicite ; B : GPU / CPU en mémoire unifiée ; C : données logiques copiées ; D : effet sur la propagation GPU. Trois méthodes et quatre mesures. |
+| `precision.png` | 2 | A : erreur du maximum ; B : erreur de la moyenne temporelle. Une courbe par taille S/M/L, selon l’intervalle entre snapshots. |
+| `scalabilite.png` | 4 | A : nombre de pas sous CFL ; B : taille d’un champ de pression ; C : propagation CPU ; D : propagation GPU. Mesure / modèle dans chaque panneau. |
+| `cpu_vs_gpu.png` | 2 | A : propagation de l’onde hors sorties ; B : simulation, sauvegarde du snapshot 3D, lecture et image 2D. Une courbe CPU et une courbe GPU. |
 
 Les courbes de temps présentent la moyenne et l’écart-type. Dans les panneaux statistiques, le temps de calcul couvre conjointement min, max, moyenne et variance ; les valeurs de ces quatre statistiques restent dans les fichiers de résultats. Dans `cpu_vs_gpu.png` et les panneaux de propagation sous CFL, le calcul désigne la propagation de l’onde, hors sorties et analyses. Les variantes d’analyse sur l’hôte utilisent une boucle CPU séquentielle ; les quatre threads OpenMP concernent la simulation CPU.
 
@@ -145,9 +180,11 @@ Pour les snapshots L, l’in-situ réduit le workflow d’un facteur 2,38 et le 
 
 Pour L, le GPU accélère la propagation seule d’environ 106 fois par rapport aux quatre threads CPU. Sur le workflow avec visualisation, le rapport est d’environ 3,32 : le rendu CPU et les E/S limitent le gain global.
 
-Pour les sismogrammes, l’ad-hoc écrit environ 25 Ko, contre 414 octets de statistiques in-situ. Le gain de stockage est net, mais l’écart de temps reste proche de la dispersion pour plusieurs cas. On ne peut pas conclure à un avantage systématique en temps.
+Pour les sismogrammes, l’ad-hoc écrit environ 25 Ko, contre 414 octets de statistiques in-situ. Le gain de stockage est net, mais l’écart de temps reste proche de la dispersion pour plusieurs cas. Les mesures n’établissent pas un avantage systématique en temps.
 
 Pour les FFT L, le noyau cuFFT prend environ 17 µs contre 282 µs pour le calcul spectral NumPy. Le traitement cuFFT complet atteint toutefois environ 10,9 ms, avec près de 5 ms de plan et d’allocation. Le workflow complet est ici plus lent en in-situ (0,395 s contre 0,369 s), avec une dispersion de 0,033 s côté in-situ. Le gain du noyau ne suffit pas à établir un gain du workflow.
+
+Le nombre de récepteurs reste fixé à quatre et chaque trace contient 1 499 échantillons pour S, M et L. La taille du domaine n’augmente donc pas le travail de la FFT dans cette campagne. Le croisement observé à L ne définit pas un seuil de rentabilité : les 26 ms d’écart moyen restent inférieurs à l’écart-type de 33 ms côté in-situ. Pour les statistiques seules à L, le temps moyen est au contraire plus faible en in-situ, à 0,360 s contre 0,403 s en ad-hoc. Le calcul en flux ajoute environ 8 ms de statistiques pendant les 1 499 pas ; l’analyse ad-hoc traite ces petits signaux d’un seul bloc après lecture.
 
 Pour la visualisation L, la slice réduit les données brutes de 9,10 Mo à 0,229 Mo, soit un facteur proche de 40. Le workflow passe de 2,764 s à 2,517 s : le gain est d’environ 9 %, car le rendu du même plan 2D prend environ 2 s dans les deux cas.
 
