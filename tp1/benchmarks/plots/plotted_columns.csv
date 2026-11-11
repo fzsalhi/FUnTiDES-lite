@@ -1,0 +1,21 @@
+figure,curve,backend,format,column
+cpu_vs_gpu.png,CPU (4 threads),cpu,bin,workflow_wall_s
+cpu_vs_gpu.png,GPU,gpu,bin,workflow_wall_s
+cpu_vs_gpu_csv.png,CPU (4 threads),cpu,csv,workflow_wall_s
+cpu_vs_gpu_csv.png,GPU,gpu,csv,workflow_wall_s
+binary_vs_csv_cpu.png,CSV,cpu,csv,workflow_wall_s
+binary_vs_csv_cpu.png,Binaire,cpu,bin,workflow_wall_s
+binary_vs_csv_gpu.png,CSV,gpu,csv,workflow_wall_s
+binary_vs_csv_gpu.png,Binaire,gpu,bin,workflow_wall_s
+cpu_vs_gpu_compute.png,CPU (4 threads),cpu,bin,compute_s
+cpu_vs_gpu_compute.png,GPU,gpu,bin,compute_s
+binary_vs_csv_write_cpu.png,CSV,cpu,csv,save_s
+binary_vs_csv_write_cpu.png,Binaire,cpu,bin,save_s
+binary_vs_csv_write_gpu.png,CSV,gpu,csv,save_s
+binary_vs_csv_write_gpu.png,Binaire,gpu,bin,save_s
+binary_vs_csv_read_cpu.png,CSV,cpu,csv,read_s
+binary_vs_csv_read_cpu.png,Binaire,cpu,bin,read_s
+binary_vs_csv_read_gpu.png,CSV,gpu,csv,read_s
+binary_vs_csv_read_gpu.png,Binaire,gpu,bin,read_s
+binary_vs_csv_storage.png,CSV,cpu,csv,raw_output_bytes
+binary_vs_csv_storage.png,Binaire,cpu,bin,raw_output_bytes

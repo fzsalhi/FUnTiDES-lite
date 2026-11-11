@@ -59,7 +59,6 @@ MODE_LABELS = {
     "combined": "Snapshots + sismos",
 }
 
-# Historical columns are retained when appending to an existing results table.
 COLUMNS = []
 
 def parse_threads(value):
@@ -287,7 +286,6 @@ def run_once(backend, executable, threads, size, elements, mode, fmt, repetition
                 "snapshot_write_s", "sismo_write_s", "other_processing_s", "fsync_s", "snapshot_count",
                 "snapshot_bytes", "sismo_bytes", "raw_output_bytes"):
         row[key] = metrics[key]
-    # Keep the names used by the original plotting script.
     row.update(simulation_internal_s=metrics["total_s"], compute_loop_s=metrics["run_s"], kernel_s=metrics["compute_s"],
                save_s=metrics["snapshot_write_s"] + metrics["sismo_write_s"],
                output_s=metrics["receiver_sample_s"] + metrics["snapshot_write_s"] + metrics["sismo_write_s"],
@@ -314,11 +312,27 @@ def main():
     parser.add_argument("--position", type=float, default=SLICE_POSITION)
     parser.add_argument("--io-sync", choices=["buffered", "fsync"], default="buffered")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--plot-only", type=Path, help="Relire un CSV existant et tracer les figures, sans simulation")
+    parser.add_argument("--columns", default="workflow_wall_s,compute_s,save_s,read_s,raw_output_bytes",
+                        help="Colonnes à tracer ; read_s = snapshot_read_s + sismo_read_s")
+    parser.add_argument("--plots-dir", type=Path, default=BASE_DIR / "plots")
+    parser.add_argument("--clean-plots", action="store_true", help="Remplacer les anciens graphes générés pour cette campagne")
     parser.add_argument("--no-render", action="store_true")
     parser.add_argument("--no-plots", action="store_true")
     parser.add_argument("--quick", action="store_true", help="Validation réduite, pas les mesures de référence")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+    def plot_results(csv_file):
+        command = [sys.executable, str(BASE_DIR / "plot_benchmarks.py"), "--input", str(csv_file),
+                   "--output", str(args.plots_dir), "--columns", args.columns,
+                   "--threads", str(max(args.threads))]
+        if args.clean_plots:
+            command.append("--clean-plots")
+        subprocess.run(command, check=True)
+
+    if args.plot_only:
+        plot_results(args.plot_only)
+        return
     if args.runs < 1 or args.warmups < 0 or args.interval < 1 or args.order not in (1, 2, 3):
         parser.error("runs/interval >= 1, warmups >= 0, ordre 1/2/3 requis")
     if not math.isfinite(args.dt) or not math.isfinite(args.timemax) or args.dt <= 0 or args.timemax <= 0:
@@ -389,7 +403,7 @@ def main():
                   f"workflow={row['workflow_wall_s']:.3f}s volume={row['total_data_mib']:.3f} MiB", flush=True)
     print(f"Résultats : {RESULTS_FILE}", flush=True)
     if not args.no_plots:
-        subprocess.run([sys.executable, str(BASE_DIR / "plot_benchmarks.py"), "--input", str(RESULTS_FILE)], check=True)
+        plot_results(RESULTS_FILE)
 
 
 if __name__ == "__main__":

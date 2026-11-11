@@ -281,3 +281,10 @@ scripts/benchmarks/plots_sismos/
 scripts/visualisation/data/sismos_benchmark.csv
 scripts/visualisation/images/
 scripts/benchmarks/plots_combined/
+
+# Conserver les scripts et les figures TP1 malgré les règles *snapshot* et snap*.png.
+!/tp1/visualisation/visu_snapshots.py
+!/tp1/benchmarks/plots/**/snapshot_*_time.png
+!/tp1/benchmarks/plots/**/binary_vs_csv_snapshot_*.png
+/tp1/visualisation/data/benchmark/
+/tp1/visualisation/images/benchmark/

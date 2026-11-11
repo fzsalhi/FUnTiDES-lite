@@ -67,7 +67,7 @@ def gnuplot_string(value):
     return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def plot_lines(filename, title, y_label, thread_counts, series, zero_based=True, x_label="Nombre de threads", errors=None):
+def plot_lines(filename, title, y_label, thread_counts, series, zero_based=True, x_label="Nombre de threads", errors=None, x_tick_labels=None):
     blocks = []
     plots = []
 
@@ -86,17 +86,18 @@ def plot_lines(filename, title, y_label, thread_counts, series, zero_based=True,
 
     output = PLOTS_DIR / filename
     output.unlink(missing_ok=True)
-    xtics = ", ".join(f'"{value}" {value}' for value in thread_counts)
+    labels = x_tick_labels if x_tick_labels is not None else thread_counts
+    xtics = ", ".join(f'{gnuplot_string(label)} {value}' for label, value in zip(labels, thread_counts))
     yrange = "[0:*]" if zero_based else "[*:*]"
 
-    script = f'''set terminal pngcairo size 1500,850 font "Sans,12"
+    script = f'''set terminal pngcairo size 1500,950 font "Sans,12" noenhanced
 set output {gnuplot_string(str(output))}
 set title {gnuplot_string(title)}
 set ylabel {gnuplot_string(y_label)}
 set xlabel {gnuplot_string(x_label)}
 set yrange {yrange}
 set grid ytics xtics
-set key outside top horizontal
+set key outside top center horizontal maxcols 3
 set xtics ({xtics})
 plot {", ".join(plots)}
 unset output
@@ -357,17 +358,45 @@ def legacy_main():
     )
 
 
+PLOT_COLUMNS = {
+    "workflow_wall_s": ("workflow", "Workflow complet", "Temps (s)"),
+    "compute_s": ("compute", "Calcul seul", "Temps (s)"),
+    "save_s": ("write", "Ecriture des snapshots et sismogrammes", "Temps (s)"),
+    "read_s": ("read", "Lecture des snapshots et sismogrammes", "Temps (s)"),
+    "raw_output_bytes": ("storage", "Volume brut ecrit", "Volume (Mio)"),
+    "snapshot_write_s": ("snapshot_write", "Ecriture des snapshots", "Temps (s)"),
+    "sismo_write_s": ("sismo_write", "Ecriture des sismogrammes", "Temps (s)"),
+    "snapshot_read_s": ("snapshot_read", "Lecture des snapshots", "Temps (s)"),
+    "sismo_read_s": ("sismo_read", "Lecture des sismogrammes", "Temps (s)"),
+    "snapshot_analysis_s": ("snapshot_analysis", "Analyse des snapshots", "Temps (s)"),
+    "sismo_analysis_s": ("sismo_analysis", "Analyse des sismogrammes", "Temps (s)"),
+    "visualization_total_s": ("postprocess", "Post-traitement complet", "Temps (s)"),
+}
+DEFAULT_COLUMNS = "workflow_wall_s,compute_s,save_s,read_s,raw_output_bytes"
+OLD_PLOTS = {
+    "simulation_time.png", "workflow_time.png", "compute_time.png", "snapshot_write_time.png",
+    "sismo_write_time.png", "snapshot_read_time.png", "sismo_read_time.png", "snapshot_analysis_time.png",
+    "sismo_analysis_time.png", "visualization_time.png", "storage_size.png", "io_share.png", "io_bandwidth.png",
+    "cpu_vs_gpu.png", "cpu_vs_gpu_compute.png", "binary_vs_csv.png", "binary_vs_csv_storage.png",
+}
+
+
 def main():
     global RESULTS_FILE, PLOTS_DIR
-    parser = argparse.ArgumentParser(description="Figures TP1 : dispersion, CPU/GPU, CSV/binaire")
+    parser = argparse.ArgumentParser(description="TP1 : comparaisons a deux courbes, sorties combinees")
     parser.add_argument("--input", type=Path, nargs="+")
-    parser.add_argument("--output", type=Path)
+    parser.add_argument("--output", type=Path, default=BASE_DIR / "plots")
+    parser.add_argument("--columns", default=DEFAULT_COLUMNS, help=",".join(PLOT_COLUMNS))
+    parser.add_argument("--threads", type=int, help="Nombre de threads CPU ; maximum disponible par defaut")
+    parser.add_argument("--clean-plots", action="store_true")
     args = parser.parse_args()
     if not args.input:
         candidates = list((BASE_DIR / "results").glob("benchmarks*.csv"))
         if not candidates:
             parser.error("Aucune mesure disponible")
         args.input = [max(candidates, key=lambda p: p.stat().st_mtime_ns)]
+    if len({p.resolve() for p in args.input}) != len(args.input):
+        parser.error("Un meme fichier ne peut pas etre fourni deux fois")
     records = []
     for path in args.input:
         with path.open(newline="") as stream:
@@ -376,117 +405,135 @@ def main():
         parser.error("Aucune mesure disponible")
     if "backend" not in records[0]:
         if len(args.input) != 1:
-            parser.error("Les anciennes mesures doivent être tracées séparément")
-        RESULTS_FILE = args.input[0]
-        PLOTS_DIR = args.output or BASE_DIR / "plots"
+            parser.error("Les anciennes mesures doivent etre tracees separement")
+        RESULTS_FILE, PLOTS_DIR = args.input[0], args.output
         PLOTS_DIR.mkdir(parents=True, exist_ok=True)
         legacy_main()
         return
     identity = {(r["machine"], r["config_hash"], r["source_hash"], r["io_sync"], r["visualize"]) for r in records}
     if len(identity) != 1:
-        parser.error("Comparer des mesures de même machine, code, configuration, synchronisation et visualisation")
-    if len({p.resolve() for p in args.input}) != len(args.input):
-        parser.error("Un même fichier ne peut pas être fourni deux fois")
-    PLOTS_DIR = args.output or BASE_DIR / "plots" / args.input[0].stem
+        parser.error("Les campagnes doivent avoir la meme machine, configuration, code, synchronisation et visualisation")
+    columns = list(dict.fromkeys(c.strip() for c in args.columns.split(",")))
+    if not columns or any(c not in PLOT_COLUMNS for c in columns):
+        parser.error("Colonnes disponibles : " + ",".join(PLOT_COLUMNS))
+    combined = [r for r in records if r["mode"] == "combined"]
+    if not combined:
+        print("Aucune sortie combinee : pas de comparaison CPU/GPU ou CSV/binaire a tracer.")
+        return
+    threads = args.threads if args.threads is not None else max(int(r["threads"]) for r in combined)
+    selected = [r for r in combined if int(r["threads"]) == threads]
+    if not selected:
+        parser.error(f"Aucune mesure avec {threads} threads")
+    if len({(r["steps"], r["dt_s"]) for r in selected}) != 1:
+        parser.error("Les nombres de pas ou les pas de temps sont differents")
+    PLOTS_DIR = args.output
     PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    grouped = defaultdict(list)
-    keys = ("backend", "threads", "size", "mode", "format")
-    for row in records:
-        grouped[tuple(row[k] for k in keys)].append(row)
-    numeric = ["simulation_wall_s", "workflow_wall_s", "compute_s", "receiver_sample_s", "snapshot_write_s", "sismo_write_s",
-               "snapshot_read_s", "sismo_read_s", "snapshot_analysis_s", "sismo_analysis_s", "snapshot_render_s",
-               "sismo_render_s", "visualization_total_s", "raw_output_bytes", "snapshot_bytes", "sismo_bytes", "save_s"]
+    if args.clean_plots:
+        import shutil
+        names = set(OLD_PLOTS) | {"cpu_vs_gpu_csv.png", "cpu_vs_gpu_bin.png"}
+        for backend in ("cpu", "gpu"):
+            names.add(f"binary_vs_csv_{backend}.png")
+            for alias, _, _ in PLOT_COLUMNS.values():
+                names.add(f"binary_vs_csv_{alias}_{backend}.png")
+        for path in PLOTS_DIR.glob("*.png"):
+            archive = BASE_DIR / "plots_cpu_threads" / path.name
+            if path.name in names or (archive.is_file() and path.read_bytes() == archive.read_bytes()):
+                path.unlink()
+        for source in args.input:
+            previous = BASE_DIR / "plots" / source.stem
+            if previous.is_dir() and previous.resolve() != PLOTS_DIR.resolve():
+                expected = OLD_PLOTS | {"summary.csv", "comparisons.csv"}
+                if all(p.is_file() and p.name in expected for p in previous.iterdir()):
+                    shutil.rmtree(previous)
+    sizes = sorted({r["size"] for r in selected},
+                   key=lambda size: next(int(r["nodes"]) for r in selected if r["size"] == size))
+    groups = defaultdict(list)
+    for row in selected:
+        groups[(row["backend"], row["format"], row["size"])].append(row)
+
+    def value(row, column):
+        if column == "read_s":
+            result = float(row["snapshot_read_s"]) + float(row["sismo_read_s"])
+        else:
+            result = float(row[column])
+        if not math.isfinite(result) or result < 0:
+            raise ValueError(f"Mesure invalide : {column}")
+        return result
+
     summary = []
-    for key, rows in sorted(grouped.items()):
-        item = dict(zip(keys, key), repetitions=len(rows))
-        for metric in numeric:
-            values = [float(r[metric]) for r in rows]
-            avg = statistics.mean(values)
-            std = statistics.stdev(values) if len(values) > 1 else 0.0
-            item.update({metric + "_mean": avg, metric + "_median": statistics.median(values), metric + "_std": std,
-                         metric + "_min": min(values), metric + "_max": max(values), metric + "_cv": std / avg if avg else 0})
-        summary.append(item)
+    for (backend, fmt, size), rows in sorted(groups.items()):
+        entry = dict(backend=backend, threads=threads, size=size, mode="combined", format=fmt, repetitions=len(rows))
+        for column in columns:
+            numbers = [value(r, column) for r in rows]
+            avg = statistics.mean(numbers)
+            std = statistics.stdev(numbers) if len(numbers) > 1 else 0.0
+            entry.update({column + "_mean": avg, column + "_median": statistics.median(numbers),
+                          column + "_std": std, column + "_min": min(numbers), column + "_max": max(numbers),
+                          column + "_cv": std / avg if avg else 0})
+        summary.append(entry)
     with (PLOTS_DIR / "summary.csv").open("w", newline="") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(summary[0]))
+        writer = csv.DictWriter(stream, fieldnames=list(summary[0]), lineterminator="\n")
         writer.writeheader()
         writer.writerows(summary)
-    sizes = sorted({r["size"] for r in records}, key=lambda s: next(int(r["nodes"]) for r in records if r["size"] == s))
-    combinations = sorted({(r["backend"], r["threads"], r["mode"], r["format"]) for r in records})
+    rendered = []
+    plotted = []
+    repetitions = sorted({len(rows) for rows in groups.values()})
 
-    def curves(metric, transform=None):
+    def draw(column, filename, title, curves):
         series, errors = [], []
-        for backend, threads, mode, fmt in combinations:
-            y, e = [], []
+        scale = 2**20 if column == "raw_output_bytes" else 1
+        for label, backend, fmt in curves:
+            means, deviations = [], []
             for size in sizes:
-                rows = grouped.get((backend, threads, size, mode, fmt), [])
-                values = [transform(r) if transform else float(r[metric]) for r in rows]
-                y.append(statistics.mean(values) if values else None)
-                e.append(statistics.stdev(values) if len(values) > 1 else 0)
-            series.append((f"{backend.upper()} {threads}t {MODE_LABELS[mode]} {fmt}", y))
-            errors.append(e)
-        return series, errors
+                rows = groups.get((backend, fmt, size))
+                if not rows:
+                    return  
+                numbers = [value(r, column) / scale for r in rows]
+                avg = statistics.mean(numbers)
+                std = statistics.stdev(numbers) if len(numbers) > 1 else 0.0
+                means.append(avg)
+                deviations.append(std)
+            series.append((label, means))
+            errors.append(deviations)
+        if len(series) != 2:
+            raise ValueError("Une comparaison doit contenir exactement deux courbes")
+        plot_lines(filename, title + " — snapshots + sismogrammes", PLOT_COLUMNS[column][2],
+                   range(1, len(sizes)+1), series, x_label="Configuration", errors=errors, x_tick_labels=sizes)
+        rendered.append(filename)
+        for label, backend, fmt in curves:
+            plotted.append(dict(figure=filename, curve=label, backend=backend, format=fmt, column=column))
 
-    suffix = " — " + records[0]["profile"] + " (moyenne +/- ecart-type)"
-    for metric, filename, title, label in [
-        ("simulation_wall_s", "simulation_time.png", "Execution SEM", "Secondes"),
-        ("workflow_wall_s", "workflow_time.png", "Workflow ad-hoc", "Secondes"),
-        ("compute_s", "compute_time.png", "Calcul hors sorties", "Secondes"),
-        ("snapshot_write_s", "snapshot_write_time.png", "Ecriture snapshots", "Secondes"),
-        ("sismo_write_s", "sismo_write_time.png", "Ecriture sismogrammes", "Secondes"),
-        ("snapshot_read_s", "snapshot_read_time.png", "Lecture snapshots et decodage", "Secondes"),
-        ("sismo_read_s", "sismo_read_time.png", "Lecture sismogrammes et decodage", "Secondes"),
-        ("snapshot_analysis_s", "snapshot_analysis_time.png", "Analyse snapshots", "Secondes"),
-        ("sismo_analysis_s", "sismo_analysis_time.png", "Analyse sismogrammes", "Secondes"),
-        ("visualization_total_s", "visualization_time.png", "Post-traitement complet", "Secondes")]:
-        series, errors = curves(metric)
-        plot_lines(filename, title + suffix, label, range(1, len(sizes)+1), series,
-                   x_label="Configurations " + ", ".join(sizes), errors=errors)
-    for filename, title, label, transform in [
-        ("storage_size.png", "Volume brut ecrit", "MiB", lambda r: float(r["raw_output_bytes"]) / 2**20),
-        ("io_share.png", "Part des E/S dans le workflow", "Pourcentage", lambda r: 100 * (float(r["save_s"]) + float(r["snapshot_read_s"]) + float(r["sismo_read_s"])) / float(r["workflow_wall_s"])),
-        ("io_bandwidth.png", "Debit logique (preparation et serialisation incluses)", "MiB/s", lambda r: float(r["raw_output_bytes"]) / 2**20 / float(r["save_s"]) if float(r["save_s"]) else 0)]:
-        series, errors = curves(None, transform)
-        plot_lines(filename, title + suffix, label, range(1, len(sizes)+1), series,
-                   x_label="Configurations " + ", ".join(sizes), errors=errors)
-
-    comparisons = []
-    def med(backend, threads, size, mode, fmt, metric):
-        rows = grouped.get((backend, threads, size, mode, fmt))
-        return statistics.median(float(r[metric]) for r in rows) if rows else None
-
-    for comparison, metric, ylabel in [("cpu_vs_gpu", "workflow_wall_s", "Temps CPU / GPU"),
-                                        ("cpu_vs_gpu_compute", "compute_s", "Calcul CPU / GPU"),
-                                        ("binary_vs_csv", "workflow_wall_s", "Temps CSV / binaire"),
-                                        ("binary_vs_csv_storage", "raw_output_bytes", "Volume CSV / binaire")]:
-        series = []
-        for backend, threads, mode, fmt in combinations:
-            is_gpu_comparison = comparison.startswith("cpu_vs_gpu")
-            if is_gpu_comparison and backend != "cpu":
-                continue
-            if not is_gpu_comparison and fmt != "csv":
-                continue
-            y = []
-            for size in sizes:
-                a = med(backend, threads, size, mode, fmt, metric)
-                b = med("gpu" if is_gpu_comparison else backend, threads, size, mode,
-                        fmt if is_gpu_comparison else "bin", metric)
-                y.append(a / b if a is not None and b else None)
-                if y[-1] is not None:
-                    comparisons.append(dict(comparison=comparison, backend=backend, threads=threads, size=size,
-                                            mode=mode, format=fmt, ratio=y[-1]))
-            if any(v is not None for v in y):
-                series.append((f"{backend} {threads}t {mode} {fmt}", y))
-        if series:
-            plot_lines(comparison + ".png", comparison + " (ratio des medianes)", ylabel,
-                       range(1, len(sizes)+1), series, x_label="Configurations " + ", ".join(sizes))
-        elif comparison == "cpu_vs_gpu":
-            print("CPU/GPU : mesures appariees manquantes, aucun resultat invente.")
-    if comparisons:
-        with (PLOTS_DIR / "comparisons.csv").open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(comparisons[0]))
+    preferred = "bin" if any(r["format"] == "bin" for r in selected) else "csv"
+    format_names = {"csv": "CSV", "bin": "Binaire"}
+    visual = "visualisation incluse" if selected[0]["visualize"] == "1" else "sans rendu PNG"
+    for column in columns:
+        alias, label, _ = PLOT_COLUMNS[column]
+        if column == "workflow_wall_s":
+            for fmt in (preferred, "csv" if preferred == "bin" else "bin"):
+                filename = "cpu_vs_gpu.png" if fmt == preferred else f"cpu_vs_gpu_{fmt}.png"
+                draw(column, filename, f"Workflow complet CPU / GPU — {format_names[fmt]}, {visual}",
+                     [(f"CPU ({threads} threads)", "cpu", fmt), ("GPU", "gpu", fmt)])
+        if column == "compute_s":
+            draw(column, "cpu_vs_gpu_compute.png", f"Calcul CPU / GPU — {format_names[preferred]}",
+                 [(f"CPU ({threads} threads)", "cpu", preferred), ("GPU", "gpu", preferred)])
+            continue
+        if column == "raw_output_bytes":
+            backend = "cpu" if any(r["backend"] == "cpu" for r in selected) else "gpu"
+            draw(column, "binary_vs_csv_storage.png", f"Volume CSV / binaire — {backend.upper()}",
+                 [("CSV", backend, "csv"), ("Binaire", backend, "bin")])
+            continue
+        for backend in ("cpu", "gpu"):
+            suffix = backend if column == "workflow_wall_s" else f"{alias}_{backend}"
+            detail = f", {visual}" if column == "workflow_wall_s" else ""
+            draw(column, f"binary_vs_csv_{suffix}.png", f"{label} CSV / binaire — {backend.upper()}{detail}",
+                 [("CSV", backend, "csv"), ("Binaire", backend, "bin")])
+    with (PLOTS_DIR / "plotted_columns.csv").open("w", newline="") as stream:
+        if plotted:
+            writer = csv.DictWriter(stream, fieldnames=list(plotted[0]), lineterminator="\n")
             writer.writeheader()
-            writer.writerows(comparisons)
-    print(f"{len(records)} mesures ; résumé et figures : {PLOTS_DIR}")
+            writer.writerows(plotted)
+    print(f"{len(selected)} mesures combinees, {threads} threads CPU, repetitions par cas : {repetitions}")
+    print(f"{len(rendered)} figures a deux courbes : {PLOTS_DIR}")
 
 
 if __name__ == "__main__":

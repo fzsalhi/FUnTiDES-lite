@@ -50,7 +50,7 @@ Les quatre modes sont `none`, `snapshots`, `sismos`, `combined`. Le mode sans so
 
 Options utiles : `--sizes 10,15,20`, `--order 2`, `--dt 0.001`, `--timemax 1.5`, `--interval 50`, `--formats csv,bin`, `--modes none,snapshots,sismos,combined`, `--threads 1,2,4`, `--io-sync fsync`, `--no-render`, `--dry-run` et `--output chemin.csv`.
 
-Chaque campagne produit un CSV de mesures, un JSON décrivant la machine, les paramètres et les empreintes des exécutables et du code C++, puis ses figures dans `benchmarks/plots/<nom_du_csv>/`. Les anciennes figures restent directement dans `benchmarks/plots/`. Le diagnostic de la dernière simulation est conservé dans `benchmarks/results/last_simulation.log`.
+Chaque campagne produit un CSV de mesures, un JSON décrivant la machine, les paramètres et les empreintes des exécutables et du code C++, puis les figures dans `benchmarks/plots/`. Les anciennes figures OpenMP sont conservées dans `benchmarks/plots_cpu_threads/`. Le diagnostic de la dernière simulation est conservé dans `benchmarks/results/last_simulation.log`.
 
 Les données brutes et images du dernier cas sont dans `visualisation/data/benchmark/` et `visualisation/images/benchmark/`. Elles sont remplacées au cas suivant ; les tableaux de mesures sont conservés. Pour conserver une simulation particulière, lancer directement `semproxy` avec un dossier de sortie dédié.
 
@@ -92,13 +92,63 @@ Les chronos C++ utilisent une horloge monotone. Un `Kokkos::fence()` termine les
 
 Par défaut, `--io-sync buffered` mesure les écritures vers le cache du système. `--io-sync fsync` attend aussi un `fsync` de chaque fichier ; ce temps est inclus dans l'écriture et renseigné séparément comme sous-ensemble, sans le compter deux fois. La lecture suit l'écriture : le cache OS n'est pas vidé, ce n'est pas une mesure de lecture à froid. Le débit affiché est un débit logique du workflow, pas un débit matériel du disque.
 
-Les figures présentent les moyennes et écarts-types des répétitions du benchmark. Pour ces mesures de temps et de volume, `summary.csv` contient aussi les médianes, minimums, maximums et coefficients de variation. Ces minimums et maximums décrivent les mesures du benchmark, pas les valeurs du champ de pression. Les ratios CSV/binaire et CPU/GPU utilisent les médianes. `--no-render` retire le rendu des images : ne pas comparer cette campagne à une campagne qui le mesure.
+Les figures présentent les moyennes et écarts-types des répétitions du benchmark. Pour ces mesures de temps et de volume, `summary.csv` contient aussi les médianes, minimums, maximums et coefficients de variation. Ces minimums et maximums décrivent les mesures du benchmark, pas les valeurs du champ de pression. Les comparaisons graphiques affichent les temps en secondes ou les volumes en Mio. `--no-render` retire le rendu des images : ne pas comparer cette campagne à une campagne qui le mesure.
 
-Pour régénérer les figures ou rassembler deux campagnes compatibles CPU et GPU :
+## Refaire les figures sans relancer les simulations
+
+Le lanceur peut relire un CSV existant. Aucun exécutable CPU ou GPU n'est nécessaire pour cette opération :
 
 ```bash
-python3 tp1/benchmarks/plot_benchmarks.py --input chemin_cpu.csv chemin_gpu.csv
+python3 tp1/benchmarks/run_benchmarks.py \
+  --plot-only tp1/benchmarks/results/benchmarks_20261111T130533.603751Z.csv \
+  --columns workflow_wall_s,compute_s,save_s,read_s,raw_output_bytes \
+  --threads 4 --clean-plots
 ```
 
-Le script refuse de mélanger machines, paramètres, code C++, politique de synchronisation ou activation du rendu différents. Aucun résultat GPU n'est produit en l'absence de mesures GPU.
+`--columns` sélectionne les mesures à tracer. `save_s` correspond à l'écriture des snapshots et des sismogrammes ; `read_s` est la somme de `snapshot_read_s` et `sismo_read_s`. Pour tracer uniquement le workflow complet, utiliser `--columns workflow_wall_s`.
+
+Les comparaisons utilisent les sorties combinées : snapshots **et** sismogrammes. Chaque figure comporte deux courbes. Pour comparer CPU et GPU, le format reste fixé ; pour comparer CSV et binaire, le backend reste fixé. Les mesures des autres modes restent dans le CSV.
+
+Avec les cinq colonnes de la commande ci-dessus, les figures produites sont :
+
+| Fichier | Deux courbes comparées |
+|---|---|
+| `cpu_vs_gpu.png` | CPU / GPU, workflow complet en binaire, visualisation incluse |
+| `cpu_vs_gpu_csv.png` | CPU / GPU, workflow complet en CSV, visualisation incluse |
+| `cpu_vs_gpu_compute.png` | CPU / GPU, calcul seul pour les sorties binaires |
+| `binary_vs_csv_cpu.png` | CSV / binaire, workflow complet sur CPU, visualisation incluse |
+| `binary_vs_csv_gpu.png` | CSV / binaire, workflow complet sur GPU, visualisation incluse |
+| `binary_vs_csv_write_cpu.png` | CSV / binaire, temps total d'écriture sur CPU |
+| `binary_vs_csv_write_gpu.png` | CSV / binaire, temps total d'écriture sur GPU |
+| `binary_vs_csv_read_cpu.png` | CSV / binaire, temps total de lecture après la simulation CPU |
+| `binary_vs_csv_read_gpu.png` | CSV / binaire, temps total de lecture après la simulation GPU |
+| `binary_vs_csv_storage.png` | CSV / binaire, volume brut écrit pour la simulation CPU |
+
+Les images sont enregistrées directement dans `tp1/benchmarks/plots/`. `summary.csv` contient les statistiques des cas combinés et `plotted_columns.csv` indique la colonne et les données utilisées pour chaque courbe. `--clean-plots` remplace les anciens graphes générés et retire l'ancien sous-dossier horodaté de la campagne ; les CSV de mesures restent dans `benchmarks/results/`.
+
+Les colonnes de temps d'écriture, de lecture et d'analyse propres aux snapshots ou aux sismogrammes peuvent aussi être sélectionnées, par exemple `--columns snapshot_write_s,sismo_write_s`. Elles sont toujours extraites des simulations avec les deux sorties activées.
+
+Le script vérifie que les données utilisent la même machine, les mêmes paramètres, le même code C++, la même politique de synchronisation et le même choix de rendu. Aucun graphe CPU/GPU n'est produit en l'absence de mesures appariées.
+
+## Résultats sur le serveur
+
+La campagne `benchmarks_20261111T130533.603751Z` a été exécutée sur `jessica`, avec un Intel Core Ultra 9 285 et une NVIDIA RTX 4000 Ada Generation. La version CPU utilise Kokkos OpenMP avec 4 threads ; la version GPU utilise CUDA. Les deux versions sont compilées en Release.
+
+Les 42 configurations ont chacune été mesurées cinq fois après une exécution de chauffe, soit 210 mesures conservées. Chaque simulation comporte 1 499 pas, avec le même maillage, le même pas de temps et les mêmes récepteurs pour CPU et GPU. Les écritures utilisent le mode `buffered` ; les lectures suivent les écritures, sans vidage du cache système.
+
+Pour les sorties combinées (snapshots et sismogrammes), les temps médians du workflow complet sont :
+
+| Taille | CPU CSV (s) | GPU CSV (s) | CPU/GPU CSV | CPU binaire (s) | GPU binaire (s) | CPU/GPU binaire |
+|---|---:|---:|---:|---:|---:|---:|
+| S | 3,75 | 3,38 | 1,11 | 3,34 | 2,97 | 1,12 |
+| M | 7,54 | 5,02 | 1,50 | 6,01 | 3,60 | 1,67 |
+| L | 12,88 | 6,72 | 1,92 | 10,53 | 4,21 | 2,50 |
+
+En L, avec les sorties combinées en binaire, le calcul seul passe de 6,63 s sur CPU à 0,073 s sur GPU, soit un rapport d'environ 91. Le rapport sur le workflow complet est de 2,50 : l'initialisation, les sorties et la visualisation occupent une part importante du temps restant. La lecture, l'analyse et le rendu Gnuplot sont réalisés sur CPU dans les deux versions.
+
+Les 30 snapshots de L occupent 53,80 Mio en CSV contre 8,68 Mio en binaire, coordonnées et métadonnées comprises, soit environ 6,2 fois moins. Les sismogrammes seuls restent beaucoup plus petits : environ 158 Kio en CSV contre 23,7 Kio en binaire. Leur réduction de volume ne se traduit pas systématiquement par un gain sur le temps total ; certaines mesures courtes présentent aussi une dispersion importante, visible dans `summary.csv`.
+
+Les [figures à deux courbes](benchmarks/plots/), le [résumé des répétitions](benchmarks/plots/summary.csv) et la [liste des colonnes tracées](benchmarks/plots/plotted_columns.csv) proviennent du [CSV de mesures](benchmarks/results/benchmarks_20261111T130533.603751Z.csv). La [description de la machine et des paramètres](benchmarks/results/benchmarks_20261111T130533.603751Z.json) accompagne ce CSV.
+
+Le dossier `benchmarks/plots_cpu_threads/` contient les mêmes images que les anciennes figures placées directement dans `benchmarks/plots/`. La campagne serveur ci-dessus utilise uniquement 4 threads CPU ; elle ne constitue pas une nouvelle mesure de passage à l'échelle en nombre de threads.
 
