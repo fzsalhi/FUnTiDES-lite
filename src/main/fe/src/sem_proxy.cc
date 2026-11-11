@@ -27,13 +27,6 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
-#ifdef SEMPROXY_ENABLE_CUFFT
-void computeSismoFFTcuFFT(const std::vector<float>& signals,
-                          int nReceivers,
-                          int nSamples,
-                          float dt,
-                          const std::string& fftFile);
-#endif
 
 #include <algorithm>
 #include <cstring>
@@ -127,14 +120,28 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
         throw std::runtime_error("Receiver coordinates must be finite and inside the domain");
   sismo_file_ = opt.sismo_file;
   fft_file_ = opt.fft_file;
+#ifndef SEMPROXY_ENABLE_CUFFT
+  if (!fft_file_.empty())
+    throw std::runtime_error("--fft-file requires a build with SEMPROXY_ENABLE_CUFFT=ON");
+#endif
   stats_interval_ = opt.stats_interval;
+  stats_file_ = opt.stats_file;
+  sismo_stats_file_ = opt.sismo_stats_file;
+  receiver_stats_enabled_ = opt.record_receivers && (stats_interval_ > 0 || !sismo_stats_file_.empty());
+  keep_receiver_traces_ = !opt.sismo_file.empty() || !opt.fft_file.empty() || opt.insitu_compress != "none";
+  slice_interval_ = opt.slice_interval;
+  slice_plane_ = opt.slice_plane;
+  slice_folder_ = opt.slice_folder;
+  slice_requested_ = opt.slice_position;
     if (!opt.stats_file.empty())
   {
+    const std::filesystem::path statsPath(opt.stats_file);
+    if (!statsPath.parent_path().empty()) std::filesystem::create_directories(statsPath.parent_path());
     stats_out_.open(opt.stats_file);
     if (!stats_out_)
       throw std::runtime_error("Cannot open stats file: " + opt.stats_file);
     stats_out_ << std::setprecision(9);
-    stats_out_ << "step,min,max,mean,variance,time_ms,mode,copy_ms,compute_ms,bytes\n";
+    stats_out_ << "step,min,max,mean,variance,time_ms,mode,copy_ms,compute_ms,bytes,time_s,count\n";
   }
   
   stats_mode_ = opt.stats_mode;
@@ -200,8 +207,14 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   if (insitu_viz_ != "none" && insitu_viz_ != "ppm")
       throw std::runtime_error("Unknown visualization mode: " + insitu_viz_);
   // one streaming accumulator per receiver (rcv_coords_ is already filled here)
-  if (stats_interval_ > 0)
-    sismo_stats_.assign(rcv_coords_.size(), StreamStats());
+  if (receiver_stats_enabled_) {
+    receiver_stats_device_ = decltype(receiver_stats_device_)("receiverStats", rcv_coords_.size());
+    Kokkos::deep_copy(receiver_stats_device_, StreamStats{});
+  }
+  if (stats_interval_ > 0) {
+    pressure_stats_device_ = decltype(pressure_stats_device_)("pressureStats");
+    pressure_stats_host_ = decltype(pressure_stats_host_)("pressureStatsHost");
+  }
 
   std::cout << "Number of receivers is " << rcv_coords_.size() << std::endl;
   bool isModelOnNodes = opt.isModelOnNodes;
@@ -303,6 +316,9 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   m_solver->computeFEInit(*m_mesh, sponge_size, opt.surface_sponge,
                           opt.taper_delta);
   initFiniteElem();
+  if (stats_interval_ > 0 && stats_mode_ == "hostcopy")
+    stats_host_column_ = decltype(stats_host_column_)("statsHostColumn", m_mesh->getNumberOfNodes());
+  if (slice_interval_ > 0) initSlice();
   // Precompute the interpolation stencil on the host. Sampling itself runs in
   // the execution space so CUDA does not migrate the field to the CPU at every step.
   const int points = m_mesh->getNumberOfPointsPerElement();
@@ -335,12 +351,13 @@ void SEMproxy::sampleReceivers(int timestep)
   auto weights = rhsWeightsRcv;
   auto traces = pnAtReceiver;
   const int column = i1;  // updatePressureField writes the new solution here
+  const int target = keep_receiver_traces_ ? timestep : 0;
   const int points = m_mesh->getNumberOfPointsPerElement();
   Kokkos::parallel_for("sample_receivers", rcv_coords_.size(), KOKKOS_LAMBDA(int r) {
     float value = 0;
     for (int q = 0; q < points; ++q)
       value += pressure(nodes(r, q), column) * weights(r, q);
-    traces(r, timestep) = value;
+    traces(r, target) = value;
   });
 }
 
@@ -366,14 +383,18 @@ void SEMproxy::run()
     const auto otherStart = tp1::Clock::now();
     if (!quiet_ && step % 50 == 0)
       m_solver->outputSolutionValues(step, i1, rhsElement[0], pnGlobal, "pnGlobal");
-    if (stats_interval_ > 0)
-      for (std::size_t r = 0; r < rcv_coords_.size(); ++r)
-        sismo_stats_[r].add(pnAtReceiver(r, step));
+    if (receiver_stats_enabled_) {
+      const auto statsStart = tp1::Clock::now();
+      updateReceiverStatistics(step);
+      Kokkos::fence();
+      metrics_.sismo_stats_s += tp1::seconds(statsStart);
+    }
     metrics_.other_processing_s += tp1::seconds(otherStart);
 
     if (is_snapshots_ && step % snap_time_interval_ == 0 && !compress_no_csv_)
       saveSnapshot(step);
 
+    if (slice_interval_ > 0 && step % slice_interval_ == 0) saveSlice(step);
     const auto processingStart = tp1::Clock::now();
     if (stats_interval_ > 0 && step % stats_interval_ == 0) {
       if (stats_mode_ == "gpu") computePressureStatistics(i1, step);
@@ -389,23 +410,21 @@ void SEMproxy::run()
   }
 #ifdef SEMPROXY_ENABLE_CUFFT
   if (!fft_file_.empty()) {
-    std::vector<float> signals(rcv_coords_.size() * metrics_.completed_steps);
-    for (std::size_t r = 0; r < rcv_coords_.size(); ++r)
-      for (int t = 0; t < metrics_.completed_steps; ++t)
-        signals[r * metrics_.completed_steps + t] = pnAtReceiver(r, t);
-    computeSismoFFTcuFFT(signals, rcv_coords_.size(), metrics_.completed_steps, dt_, fft_file_);
+    metrics_.fft = computeSismoFFTcuFFT(pnAtReceiver, rcv_coords_.size(),
+        metrics_.completed_steps, dt_, fft_file_, durable_outputs_);
+    metrics_.fsync_s += metrics_.fft.fsync_s;
   }
 #endif
   if (insitu_compress_ != "none") compressSeismograms();
   if (insitu_extra_ == "steering")
     cout << "---- Steering : " << steer_reads_ << " reads, total "
          << steer_total_ms_ << " ms." << endl;
-  if (stats_interval_ > 0)
-    for (std::size_t r = 0; r < sismo_stats_.size(); ++r)
-      cout << "[In-situ sismo] rcv=" << r << " n=" << sismo_stats_[r].n
-           << " min=" << sismo_stats_[r].minVal << " max=" << sismo_stats_[r].maxVal
-           << " moyenne=" << sismo_stats_[r].mean
-           << " variance=" << sismo_stats_[r].variance() << endl;
+  if (receiver_stats_enabled_) saveReceiverStatistics();
+  if (stats_out_.is_open()) {
+    const auto statsWrite = tp1::Clock::now();
+    metrics_.stats_bytes = tp1::finish(stats_out_, stats_file_, durable_outputs_, metrics_.fsync_s);
+    metrics_.stats_write_s += tp1::seconds(statsWrite);
+  }
   cout << "---- Elapsed Stats Time : " << stats_total_ms_ / 1E3
        << " seconds (" << stats_count_ << " calls)." << endl;
   if (!sismo_file_.empty()) saveSeismograms();
@@ -430,7 +449,7 @@ void SEMproxy::init_arrays()
   pnGlobal =
       allocateArray2D<arrayReal>(m_mesh->getNumberOfNodes(), 2, "pnGlobal");
   const int nRcv = rcv_coords_.size();
-  pnAtReceiver = allocateArray2D<arrayReal>(nRcv, num_sample_, "pnAtReceiver");
+  pnAtReceiver = allocateArray2D<arrayReal>(nRcv, keep_receiver_traces_ ? num_sample_ : 1, "pnAtReceiver");
   // Receiver
   rhsElementRcv = allocateVector<vectorInt>(nRcv, "rhsElementRcv");
   rhsWeightsRcv = allocateArray2D<arrayReal>(
@@ -745,6 +764,36 @@ void SEMproxy::writeMetrics(double initial_s, double total_s) const
       << ",\n  \"snapshot_count\": " << metrics_.snapshot_count
       << ",\n  \"snapshot_bytes\": " << metrics_.snapshot_bytes
       << ",\n  \"sismo_bytes\": " << metrics_.sismo_bytes
+      << ",\n  \"stats_compute_s\": " << metrics_.stats_compute_s
+      << ",\n  \"stats_copy_s\": " << metrics_.stats_copy_s
+      << ",\n  \"stats_write_s\": " << metrics_.stats_write_s
+      << ",\n  \"stats_bytes\": " << metrics_.stats_bytes
+      << ",\n  \"stats_calls\": " << stats_count_
+      << ",\n  \"stats_transfer_bytes\": " << metrics_.stats_transfer_bytes
+      << ",\n  \"sismo_stats_s\": " << metrics_.sismo_stats_s
+      << ",\n  \"sismo_stats_copy_s\": " << metrics_.sismo_stats_copy_s
+      << ",\n  \"sismo_stats_write_s\": " << metrics_.sismo_stats_write_s
+      << ",\n  \"sismo_stats_bytes\": " << metrics_.sismo_stats_bytes
+      << ",\n  \"receiver_trace_bytes\": " << pnAtReceiver.extent(0) * pnAtReceiver.extent(1) * sizeof(float)
+      << ",\n  \"receiver_stats_memory_bytes\": " << receiver_stats_device_.extent(0) * sizeof(StreamStats)
+      << ",\n  \"slice_setup_s\": " << metrics_.slice_setup_s
+      << ",\n  \"slice_extract_s\": " << metrics_.slice_extract_s
+      << ",\n  \"slice_copy_s\": " << metrics_.slice_copy_s
+      << ",\n  \"slice_write_s\": " << metrics_.slice_write_s
+      << ",\n  \"slice_count\": " << metrics_.slice_count
+      << ",\n  \"slice_nodes\": " << slice_nodes_.extent(0)
+      << ",\n  \"slice_bytes\": " << metrics_.slice_bytes
+      << ",\n  \"fft_prepare_s\": " << metrics_.fft.prepare_s
+      << ",\n  \"fft_plan_s\": " << metrics_.fft.plan_s
+      << ",\n  \"fft_h2d_s\": " << metrics_.fft.h2d_s
+      << ",\n  \"fft_compute_s\": " << metrics_.fft.compute_s
+      << ",\n  \"fft_d2h_s\": " << metrics_.fft.d2h_s
+      << ",\n  \"fft_write_s\": " << metrics_.fft.write_s
+      << ",\n  \"fft_total_s\": " << metrics_.fft.total_s
+      << ",\n  \"fft_h2d_bytes\": " << metrics_.fft.h2d_bytes
+      << ",\n  \"fft_d2h_bytes\": " << metrics_.fft.d2h_bytes
+      << ",\n  \"fft_output_bytes\": " << metrics_.fft.output_bytes
+      << ",\n  \"total_output_bytes\": " << metrics_.snapshot_bytes + metrics_.sismo_bytes + metrics_.stats_bytes + metrics_.sismo_stats_bytes + metrics_.slice_bytes + metrics_.fft.output_bytes
       << ",\n  \"raw_output_bytes\": " << metrics_.snapshot_bytes + metrics_.sismo_bytes
       << "\n}\n";
   out.close();
@@ -795,178 +844,160 @@ std::vector<std::array<float, 3>> SEMproxy::readReceivers(
     throw std::runtime_error("No receiver found in file: " + filename);
   return rcvs;
 }
+void SEMproxy::updateReceiverStatistics(int timestep)
+{
+  auto values = pnAtReceiver;
+  auto stats = receiver_stats_device_;
+  const int index = keep_receiver_traces_ ? timestep : 0;
+  Kokkos::parallel_for("ReceiverWelford", rcv_coords_.size(), KOKKOS_LAMBDA(int r) {
+    stats(r).add(values(r, index));
+  });
+}
+
+void SEMproxy::saveReceiverStatistics()
+{
+  const auto copyStart = tp1::Clock::now();
+  auto host = Kokkos::create_mirror_view_and_copy(Kokkos::HostSpace{}, receiver_stats_device_);
+  Kokkos::fence();
+  metrics_.sismo_stats_copy_s += tp1::seconds(copyStart);
+  if (sismo_stats_file_.empty()) return;
+  const auto writeStart = tp1::Clock::now();
+  fs::path path(sismo_stats_file_);
+  if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
+  std::ofstream out(path);
+  out << "receiver,count,min,max,mean,variance\n" << std::setprecision(17);
+  for (std::size_t r = 0; r < rcv_coords_.size(); ++r) {
+    const auto& stats = host(r);
+    out << r << ',' << stats.n << ',' << stats.minVal << ',' << stats.maxVal << ','
+        << stats.mean << ',' << stats.variance() << '\n';
+  }
+  metrics_.sismo_stats_bytes = tp1::finish(out, path, durable_outputs_, metrics_.fsync_s);
+  metrics_.sismo_stats_write_s += tp1::seconds(writeStart);
+}
+
+void SEMproxy::initSlice()
+{
+  const auto start = tp1::Clock::now();
+  const int axis = slice_plane_ == "XY" ? 2 : slice_plane_ == "XZ" ? 1 : 0;
+  const int total = m_mesh->getNumberOfNodes();
+  slice_coordinate_ = m_mesh->nodeCoord(0, axis);
+  for (int n = 1; n < total; ++n) {
+    const float coordinate = m_mesh->nodeCoord(n, axis);
+    const float distance = std::abs(coordinate - slice_requested_);
+    const float current = std::abs(slice_coordinate_ - slice_requested_);
+    if (distance < current || (distance == current && coordinate < slice_coordinate_))
+      slice_coordinate_ = coordinate;
+  }
+  std::vector<int> indices;
+  for (int n = 0; n < total; ++n)
+    if (m_mesh->nodeCoord(n, axis) == slice_coordinate_) indices.push_back(n);
+  slice_nodes_ = allocateVector<vectorInt>(indices.size(), "sliceNodes");
+  for (std::size_t n = 0; n < indices.size(); ++n) slice_nodes_(n) = indices[n];
+  slice_values_ = decltype(slice_values_)("sliceValues", indices.size());
+  slice_host_values_ = decltype(slice_host_values_)("sliceHostValues", indices.size());
+  Kokkos::fence();
+  metrics_.slice_setup_s = tp1::seconds(start);
+}
+
+void SEMproxy::saveSlice(int timestep)
+{
+  Kokkos::fence();
+  const auto extractStart = tp1::Clock::now();
+  auto nodes = slice_nodes_;
+  auto values = slice_values_;
+  auto pressure = pnGlobal;
+  const int column = i1;
+  Kokkos::parallel_for("ExtractSlice", nodes.extent(0), KOKKOS_LAMBDA(int n) {
+    values(n) = pressure(nodes(n), column);
+  });
+  Kokkos::fence();
+  metrics_.slice_extract_s += tp1::seconds(extractStart);
+  const auto copyStart = tp1::Clock::now();
+  Kokkos::deep_copy(slice_host_values_, slice_values_);
+  Kokkos::fence();
+  metrics_.slice_copy_s += tp1::seconds(copyStart);
+  const auto writeStart = tp1::Clock::now();
+  fs::create_directories(slice_folder_);
+  auto finish = [&](std::ofstream& out, const fs::path& path) {
+    metrics_.slice_bytes += tp1::finish(out, path, durable_outputs_, metrics_.fsync_s);
+  };
+  const int count = slice_nodes_.extent(0);
+  if (!slice_coords_written_) {
+    std::vector<float> xyz(3 * count);
+    for (int n = 0; n < count; ++n)
+      for (int d = 0; d < 3; ++d) xyz[3 * n + d] = m_mesh->nodeCoord(slice_nodes_(n), d);
+    const auto path = fs::path(slice_folder_) / "coords.bin";
+    std::ofstream out(path, std::ios::binary);
+    tp1::writeFloat32(out, xyz);
+    finish(out, path);
+    slice_coords_written_ = true;
+  }
+  std::ostringstream name;
+  name << "slice_it_" << std::setw(6) << std::setfill('0') << timestep;
+  const auto base = fs::path(slice_folder_) / name.str();
+  std::vector<float> data(count);
+  for (int n = 0; n < count; ++n) data[n] = slice_host_values_(n);
+  {
+    const auto path = base.string() + ".bin";
+    std::ofstream out(path, std::ios::binary);
+    tp1::writeFloat32(out, data);
+    finish(out, path);
+  }
+  const auto path = base.string() + ".json";
+  std::ofstream meta(path);
+  meta << std::setprecision(17)
+       << "{\"schema\":\"funtides.snapshot.v1\",\"kind\":\"slice\",\"dtype\":\"<f4\",\"count\":" << count
+       << ",\"coordinates\":\"coords.bin\",\"step\":" << timestep
+       << ",\"dt_s\":" << dt_ << ",\"time_s\":" << (timestep + 1) * double(dt_)
+       << ",\"plane\":" << tp1::jsonString(slice_plane_) << ",\"requested_position\":" << slice_requested_
+       << ",\"position\":" << slice_coordinate_ << "}\n";
+  finish(meta, path);
+  ++metrics_.slice_count;
+  metrics_.slice_write_s += tp1::seconds(writeStart);
+}
+
 void SEMproxy::computePressureStatistics(int column, int step)
 {
-  const int nbNodes = m_mesh->getNumberOfNodes();
-
-  if (nbNodes <= 0)
-    throw std::runtime_error("Cannot compute statistics on an empty field.");
-  
   Kokkos::fence();
-
-  const auto start = std::chrono::steady_clock::now();
-
-  auto pressure = pnGlobal;
-
-  float minPressure = std::numeric_limits<float>::max();
-  float maxPressure = std::numeric_limits<float>::lowest();
-  double sumPressure = 0.0;
-
-  Kokkos::parallel_reduce(
-      "PressureMin",
-      nbNodes,
-      KOKKOS_LAMBDA(const int n, float& localMin) {
-        const float value = pressure(n, column);
-        if (value < localMin)
-          localMin = value;
-      },
-      Kokkos::Min<float>(minPressure));
-
-  Kokkos::parallel_reduce(
-      "PressureMax",
-      nbNodes,
-      KOKKOS_LAMBDA(const int n, float& localMax) {
-        const float value = pressure(n, column);
-        if (value > localMax)
-          localMax = value;
-      },
-      Kokkos::Max<float>(maxPressure));
-
-  Kokkos::parallel_reduce(
-      "PressureSum",
-      nbNodes,
-      KOKKOS_LAMBDA(const int n, double& localSum) {
-        localSum += static_cast<double>(pressure(n, column));
-      },
-      sumPressure);
-
-  const double meanPressure = sumPressure / nbNodes;
-  double variancePressure = 0.0;
-
-  Kokkos::parallel_reduce(
-      "PressureVariance",
-      nbNodes,
-      KOKKOS_LAMBDA(const int n, double& localVariance) {
-        const double difference =
-            static_cast<double>(pressure(n, column)) - meanPressure;
-        localVariance += difference * difference;
-      },
-      variancePressure);
-
-  variancePressure /= nbNodes;
-
+  const auto start = tp1::Clock::now();
+  Kokkos::parallel_reduce("PressureWelford", m_mesh->getNumberOfNodes(),
+                         PressureReduction{pnGlobal, column}, pressure_stats_device_);
   Kokkos::fence();
-
-  const double elapsedMs =
-      std::chrono::duration<double, std::milli>(
-          std::chrono::steady_clock::now() - start)
-          .count();
-
-  recordStats(step, "gpu", minPressure, maxPressure, meanPressure,
-              variancePressure, 0.0, elapsedMs, elapsedMs,
-              2 * sizeof(float) + 2 * sizeof(double));
-
-  std::cout << "[In-situ Kokkos] pas=" << step
-            << " min=" << minPressure
-            << " max=" << maxPressure
-            << " moyenne=" << meanPressure
-            << " variance=" << variancePressure
-            << " temps_ms=" << elapsedMs << '\n';
+  const auto copied = tp1::Clock::now();
+  const double computeMs = tp1::seconds(start) * 1000;
+  Kokkos::deep_copy(pressure_stats_host_, pressure_stats_device_);
+  Kokkos::fence();
+  const double copyMs = tp1::seconds(copied) * 1000;
+  const auto stats = pressure_stats_host_();
+  recordStats(step, "gpu", stats.minVal, stats.maxVal, stats.mean, stats.variance(),
+              copyMs, computeMs, copyMs + computeMs, sizeof(StreamStats));
 }
-// Statistiques in situ du champ de pression, version CPU, une seule passe.
-// column : colonne de pnGlobal a analyser (celle qui vient d'etre calculee)
-// step   : numero du pas de temps (pour l'affichage uniquement)
+
 void SEMproxy::computePressureStatisticsCPU(int column, int step)
 {
-  const int nbNodes = m_mesh->getNumberOfNodes();
-  if (nbNodes <= 0)
-    throw std::runtime_error("Cannot compute statistics on an empty field.");
-
-  Kokkos::fence();  // make sure previous solver kernels are done before timing
-  const auto start = std::chrono::steady_clock::now();
-
-  double minP = pnGlobal(0, column);
-  double maxP = minP;
-  double mean = 0.0;  // moyenne courante
-  double m2 = 0.0;    // cumul des carres des ecarts a la moyenne courante
-
-  for (int n = 0; n < nbNodes; n++)
-  {
-    const double x = pnGlobal(n, column);
-    if (x < minP) minP = x;
-    if (x > maxP) maxP = x;
-    // Welford : mise a jour incrementale
-    const double delta = x - mean;
-    mean += delta / (n + 1);
-    m2 += delta * (x - mean);
-  }
-  const double variance = m2 / nbNodes;  // variance de population
-
-  const double elapsedMs =
-      std::chrono::duration<double, std::milli>(
-          std::chrono::steady_clock::now() - start)
-          .count();
-  recordStats(step, "cpu", minP, maxP, mean, variance, 0.0, elapsedMs,
-              elapsedMs, 0);
-
-  std::cout << "[In-situ CPU] pas=" << step << " min=" << minP
-            << " max=" << maxP << " moyenne=" << mean
-            << " variance=" << variance << " temps_ms=" << elapsedMs << '\n';
+  Kokkos::fence();
+  const auto start = tp1::Clock::now();
+  StreamStats stats;
+  for (int n = 0; n < m_mesh->getNumberOfNodes(); ++n) stats.add(pnGlobal(n, column));
+  const double computeMs = tp1::seconds(start) * 1000;
+  recordStats(step, "cpu", stats.minVal, stats.maxVal, stats.mean, stats.variance(),
+              0, computeMs, computeMs, 0);
 }
 
-// In-situ statistics, host version: explicit GPU->host copy of one column,
-// then a single-pass CPU loop (Welford). Copy and compute are timed separately.
-// column : column of pnGlobal to analyse (the one just computed)
-// step   : time step number (display only)
 void SEMproxy::computePressureStatisticsHostCopy(int column, int step)
 {
-  const int nbNodes = m_mesh->getNumberOfNodes();
-  if (nbNodes <= 0)
-    throw std::runtime_error("Cannot compute statistics on an empty field.");
-
-  // Host buffer, allocated outside the timed region
-  Kokkos::View<float*, Layout, Kokkos::HostSpace> hostCol("hostCol", nbNodes);
-  // The column is contiguous because Layout is LayoutLeft with CUDA
-  auto col = Kokkos::subview(pnGlobal, Kokkos::ALL, column);
-
-  Kokkos::fence();  // make sure the solver kernels are done before timing
-  const auto t0 = std::chrono::steady_clock::now();
-  Kokkos::deep_copy(hostCol, col);  // the GPU -> host transfer
-  const auto t1 = std::chrono::steady_clock::now();
-
-  // Single-pass statistics on the host copy
-  double minP = hostCol(0);
-  double maxP = minP;
-  double mean = 0.0;  // running mean
-  double m2 = 0.0;    // sum of squared deviations from the running mean
-
-  for (int n = 0; n < nbNodes; n++)
-  {
-    const double x = hostCol(n);
-    if (x < minP) minP = x;
-    if (x > maxP) maxP = x;
-    // Welford: incremental update
-    const double delta = x - mean;
-    mean += delta / (n + 1);
-    m2 += delta * (x - mean);
-  }
-  const double variance = m2 / nbNodes;
-
-  const auto t2 = std::chrono::steady_clock::now();
-
-  const double copyMs =
-      std::chrono::duration<double, std::milli>(t1 - t0).count();
-  const double computeMs =
-      std::chrono::duration<double, std::milli>(t2 - t1).count();
-  const std::size_t bytes = static_cast<std::size_t>(nbNodes) * sizeof(float);
-  
-  recordStats(step, "hostcopy", minP, maxP, mean, variance, copyMs,
-              computeMs, copyMs + computeMs, bytes);
-  
-  std::cout << "[In-situ HostCopy] step=" << step << " min=" << minP
-            << " max=" << maxP << " mean=" << mean
-            << " variance=" << variance << " copy_ms=" << copyMs
-            << " compute_ms=" << computeMs << " bytes=" << bytes << '\n';
+  Kokkos::fence();
+  const auto start = tp1::Clock::now();
+  Kokkos::deep_copy(stats_host_column_, Kokkos::subview(pnGlobal, Kokkos::ALL, column));
+  Kokkos::fence();
+  const double copyMs = tp1::seconds(start) * 1000;
+  const auto computeStart = tp1::Clock::now();
+  StreamStats stats;
+  for (int n = 0; n < m_mesh->getNumberOfNodes(); ++n) stats.add(stats_host_column_(n));
+  const double computeMs = tp1::seconds(computeStart) * 1000;
+  recordStats(step, "hostcopy", stats.minVal, stats.maxVal, stats.mean, stats.variance(),
+              copyMs, computeMs, copyMs + computeMs,
+              m_mesh->getNumberOfNodes() * sizeof(float));
 }
 
 void SEMproxy::recordStats(int step, const char* mode, double minP,
@@ -977,10 +1008,16 @@ void SEMproxy::recordStats(int step, const char* mode, double minP,
   stats_total_ms_ += totalMs;
   stats_count_++;
 
+  metrics_.stats_compute_s += computeMs / 1000;
+  metrics_.stats_copy_s += copyMs / 1000;
+  metrics_.stats_transfer_bytes += bytes;
+  const auto writeStart = tp1::Clock::now();
   if (stats_out_.is_open())
     stats_out_ << step << ',' << minP << ',' << maxP << ',' << mean << ','
                << variance << ',' << totalMs << ',' << mode << ',' << copyMs
-               << ',' << computeMs << ',' << bytes << '\n';
+               << ',' << computeMs << ',' << bytes << ',' << (step + 1) * double(dt_)
+               << ',' << m_mesh->getNumberOfNodes() << '\n';
+  metrics_.stats_write_s += tp1::seconds(writeStart);
 }
 
 void SEMproxy::savePPMSlice(int step, int column)

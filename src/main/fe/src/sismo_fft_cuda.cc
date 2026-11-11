@@ -1,282 +1,111 @@
+#include "sem_proxy.h"
 #include <cuda_runtime_api.h>
 #include <cufft.h>
-
-#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <iostream>
 #include <stdexcept>
-#include <string>
 #include <vector>
 
-namespace
-{
-void checkCuda(cudaError_t err, const char* where)
-{
-  if (err != cudaSuccess)
-    throw std::runtime_error(std::string(where) + ": " +
-                             cudaGetErrorString(err));
+namespace {
+void checkCuda(cudaError_t error, const char* where) {
+  if (error != cudaSuccess)
+    throw std::runtime_error(std::string(where) + ": " + cudaGetErrorString(error));
 }
-
-void checkCuFFT(cufftResult err, const char* where)
-{
-  if (err != CUFFT_SUCCESS)
-    throw std::runtime_error(std::string(where) +
-                             ": cuFFT error code " +
-                             std::to_string(static_cast<int>(err)));
+void checkCuFFT(cufftResult error, const char* where) {
+  if (error != CUFFT_SUCCESS)
+    throw std::runtime_error(std::string(where) + ": cuFFT error " + std::to_string(error));
 }
 }
 
-void computeSismoFFTcuFFT(const std::vector<float>& signals,
-                          int nReceivers,
-                          int nSamples,
-                          float dt,
-                          const std::string& fftFile)
-{
-  if (nReceivers <= 0 || nSamples <= 1)
-    throw std::runtime_error("Invalid sismogram dimensions for cuFFT.");
-
-  if (dt <= 0.0f)
-    throw std::runtime_error("dt must be > 0 for cuFFT.");
-
-  const std::size_t expected =
-      static_cast<std::size_t>(nReceivers) *
-      static_cast<std::size_t>(nSamples);
-
-  if (signals.size() != expected)
-    throw std::runtime_error("computeSismoFFTcuFFT: unexpected input size.");
-
-  const int nFreq = nSamples / 2 + 1;
-
-  const std::size_t inputBytes =
-      expected * sizeof(cufftReal);
-
-  const std::size_t outputCount =
-      static_cast<std::size_t>(nReceivers) *
-      static_cast<std::size_t>(nFreq);
-
-  const std::size_t outputBytes =
-      outputCount * sizeof(cufftComplex);
-
-  std::vector<cufftReal> hostInput(expected);
-
-  for (int r = 0; r < nReceivers; ++r)
-  {
-    const std::size_t base =
-        static_cast<std::size_t>(r) * nSamples;
-
-    double mean = 0.0;
-
-    for (int t = 0; t < nSamples; ++t)
-      mean += signals[base + t];
-
-    mean /= static_cast<double>(nSamples);
-
-    for (int t = 0; t < nSamples; ++t)
-    {
-      hostInput[base + t] =
-          static_cast<cufftReal>(
-              signals[base + t] - mean);
-    }
-  }
-
-  cufftReal* dInput = nullptr;
-  cufftComplex* dOutput = nullptr;
+tp1::FFTMetrics computeSismoFFTcuFFT(const arrayReal& traces, int receivers,
+                                   int samples, float dt,
+                                   const std::string& file, bool durable) {
+  if (receivers <= 0 || samples <= 1 || dt <= 0)
+    throw std::runtime_error("Invalid dimensions or timestep for cuFFT");
+  Kokkos::fence();
+  const auto totalStart = tp1::Clock::now();
+  tp1::FFTMetrics timing;
+  const int frequencies = samples / 2 + 1;
+  const std::size_t inputCount = std::size_t(receivers) * samples;
+  const std::size_t outputCount = std::size_t(receivers) * frequencies;
+  cufftReal* input = nullptr;
+  cufftComplex* output = nullptr;
   cufftHandle plan{};
+  try {
+    auto start = tp1::Clock::now();
+    checkCuda(cudaMalloc(reinterpret_cast<void**>(&input), inputCount * sizeof(cufftReal)), "cudaMalloc input");
+    checkCuda(cudaMalloc(reinterpret_cast<void**>(&output), outputCount * sizeof(cufftComplex)), "cudaMalloc output");
+    checkCuFFT(cufftPlan1d(&plan, samples, CUFFT_R2C, receivers), "cufftPlan1d");
+    timing.plan_s = tp1::seconds(start);
 
-  checkCuda(
-      cudaMalloc(
-          reinterpret_cast<void**>(&dInput),
-          inputBytes),
-      "cudaMalloc(dInput)");
-
-  try
-  {
-    checkCuda(
-        cudaMalloc(
-            reinterpret_cast<void**>(&dOutput),
-            outputBytes),
-        "cudaMalloc(dOutput)");
-
-    checkCuFFT(
-        cufftPlan1d(
-            &plan,
-            nSamples,
-            CUFFT_R2C,
-            nReceivers),
-        "cufftPlan1d");
-
-    const auto totalStart =
-        std::chrono::steady_clock::now();
-
-    const auto h2dStart =
-        std::chrono::steady_clock::now();
-
-    checkCuda(
-        cudaMemcpy(
-            dInput,
-            hostInput.data(),
-            inputBytes,
-            cudaMemcpyHostToDevice),
-        "cudaMemcpy H2D");
-
-    const auto h2dEnd =
-        std::chrono::steady_clock::now();
-
-    const auto fftStart =
-        std::chrono::steady_clock::now();
-
-    checkCuFFT(
-        cufftExecR2C(
-            plan,
-            dInput,
-            dOutput),
-        "cufftExecR2C");
-
-    checkCuda(
-        cudaDeviceSynchronize(),
-        "cudaDeviceSynchronize after cuFFT");
-
-    const auto fftEnd =
-        std::chrono::steady_clock::now();
-
-    std::vector<cufftComplex> hostOutput(outputCount);
-
-    const auto d2hStart =
-        std::chrono::steady_clock::now();
-
-    checkCuda(
-        cudaMemcpy(
-            hostOutput.data(),
-            dOutput,
-            outputBytes,
-            cudaMemcpyDeviceToHost),
-        "cudaMemcpy D2H");
-
-    const auto d2hEnd =
-        std::chrono::steady_clock::now();
-
-    const auto totalEnd = d2hEnd;
-
-    const double h2dMs =
-        std::chrono::duration<double, std::milli>(
-            h2dEnd - h2dStart)
-            .count();
-
-    const double fftMs =
-        std::chrono::duration<double, std::milli>(
-            fftEnd - fftStart)
-            .count();
-
-    const double d2hMs =
-        std::chrono::duration<double, std::milli>(
-            d2hEnd - d2hStart)
-            .count();
-
-    const double totalMs =
-        std::chrono::duration<double, std::milli>(
-            totalEnd - totalStart)
-            .count();
-
-    std::ofstream out(fftFile);
-
-    if (!out)
-      throw std::runtime_error(
-          "Cannot open FFT output file: " + fftFile);
-
-    out << std::setprecision(9);
-    out << "receiver,frequency_hz,amplitude\n";
-
-    for (int r = 0; r < nReceivers; ++r)
+    start = tp1::Clock::now();
+#ifdef ENABLE_CUDA
+    // Traces stay on the device; only the spectrum is returned to the host.
     {
-      const std::size_t base =
-          static_cast<std::size_t>(r) * nFreq;
-
-      for (int k = 0; k < nFreq; ++k)
-      {
-        const cufftComplex z =
-            hostOutput[base + k];
-
-        const double amplitude =
-            std::sqrt(
-                static_cast<double>(z.x) * z.x +
-                static_cast<double>(z.y) * z.y) *
-            static_cast<double>(dt);
-
-        const double frequency =
-            static_cast<double>(k) /
-            (static_cast<double>(nSamples) *
-             static_cast<double>(dt));
-
-        out << r << ','
-            << frequency << ','
-            << amplitude << '\n';
-      }
+      Kokkos::View<double*, Kokkos::CudaSpace> means("fft_means", receivers);
+      Kokkos::parallel_for("fft_means", Kokkos::RangePolicy<>(0, receivers), KOKKOS_LAMBDA(int r) {
+        double sum = 0;
+        for (int t = 0; t < samples; ++t) sum += traces(r, t);
+        means(r) = sum / samples;
+      });
+      Kokkos::parallel_for("fft_center_pack", Kokkos::RangePolicy<Kokkos::DefaultExecutionSpace,
+          Kokkos::IndexType<std::size_t>>(0, inputCount), KOKKOS_LAMBDA(std::size_t index) {
+        const int r = index / samples, t = index % samples;
+        input[index] = static_cast<float>(double(traces(r, t)) - means(r));
+      });
+      Kokkos::fence();
     }
+    timing.prepare_s = tp1::seconds(start);
+#else
+    std::vector<cufftReal> host(inputCount);
+    for (int r = 0; r < receivers; ++r) {
+      double mean = 0;
+      for (int t = 0; t < samples; ++t) mean += traces(r, t);
+      mean /= samples;
+      for (int t = 0; t < samples; ++t)
+        host[std::size_t(r) * samples + t] = static_cast<float>(double(traces(r, t)) - mean);
+    }
+    timing.prepare_s = tp1::seconds(start);
+    start = tp1::Clock::now();
+    timing.h2d_bytes = inputCount * sizeof(cufftReal);
+    checkCuda(cudaMemcpy(input, host.data(), timing.h2d_bytes, cudaMemcpyHostToDevice), "cudaMemcpy H2D");
+    timing.h2d_s = tp1::seconds(start);
+#endif
 
-    std::ofstream timing(
-        fftFile + ".timings.csv");
+    start = tp1::Clock::now();
+    checkCuFFT(cufftExecR2C(plan, input, output), "cufftExecR2C");
+    checkCuda(cudaDeviceSynchronize(), "cuFFT synchronization");
+    timing.compute_s = tp1::seconds(start);
+    std::vector<cufftComplex> spectrum(outputCount);
+    start = tp1::Clock::now();
+    timing.d2h_bytes = outputCount * sizeof(cufftComplex);
+    checkCuda(cudaMemcpy(spectrum.data(), output, timing.d2h_bytes, cudaMemcpyDeviceToHost), "cudaMemcpy D2H");
+    timing.d2h_s = tp1::seconds(start);
 
-    if (!timing)
-      throw std::runtime_error(
-          "Cannot open FFT timing file: " +
-          fftFile + ".timings.csv");
-
-    timing << std::setprecision(9);
-
-    timing
-        << "n_receivers,n_samples,bytes_h2d,bytes_d2h,"
-           "h2d_ms,fft_ms,d2h_ms,total_ms\n";
-
-    timing << nReceivers << ','
-           << nSamples << ','
-           << inputBytes << ','
-           << outputBytes << ','
-           << h2dMs << ','
-           << fftMs << ','
-           << d2hMs << ','
-           << totalMs << '\n';
-
-    std::cout
-        << "[In-situ cuFFT] receivers="
-        << nReceivers
-        << " samples="
-        << nSamples
-        << " H2D="
-        << h2dMs
-        << " ms"
-        << " FFT="
-        << fftMs
-        << " ms"
-        << " D2H="
-        << d2hMs
-        << " ms"
-        << " total="
-        << totalMs
-        << " ms"
-        << '\n';
-
-    cufftDestroy(plan);
-    plan = {};
-
-    cudaFree(dOutput);
-    dOutput = nullptr;
-
-    cudaFree(dInput);
-    dInput = nullptr;
-  }
-  catch (...)
-  {
-    if (plan)
-      cufftDestroy(plan);
-
-    if (dOutput)
-      cudaFree(dOutput);
-
-    if (dInput)
-      cudaFree(dInput);
-
+    start = tp1::Clock::now();
+    const std::filesystem::path path(file);
+    if (!path.parent_path().empty()) std::filesystem::create_directories(path.parent_path());
+    std::ofstream stream(path);
+    if (!stream) throw std::runtime_error("Cannot open spectrum file: " + file);
+    stream << std::setprecision(17) << "receiver,frequency_hz,amplitude\n";
+    for (int r = 0; r < receivers; ++r)
+      for (int k = 0; k < frequencies; ++k) {
+        const auto z = spectrum[std::size_t(r) * frequencies + k];
+        const double amplitude = std::hypot(double(z.x), double(z.y)) * double(dt);
+        stream << r << ',' << double(k) / (double(samples) * double(dt)) << ',' << amplitude << '\n';
+      }
+    timing.output_bytes = tp1::finish(stream, path, durable, timing.fsync_s);
+    timing.write_s = tp1::seconds(start);
+    checkCuFFT(cufftDestroy(plan), "cufftDestroy"); plan = {};
+    checkCuda(cudaFree(output), "cudaFree output"); output = nullptr;
+    checkCuda(cudaFree(input), "cudaFree input"); input = nullptr;
+    timing.total_s = tp1::seconds(totalStart);
+    return timing;
+  } catch (...) {
+    if (plan) cufftDestroy(plan);
+    if (output) cudaFree(output);
+    if (input) cudaFree(input);
     throw;
   }
 }

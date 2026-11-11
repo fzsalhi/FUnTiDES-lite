@@ -1,0 +1,52 @@
+{
+  "semproxy": "./build-openmp/bin/semproxy",
+  "output_dir": "./tp2/benchmarks/results",
+  "repetitions": 5,
+  "warmups": 1,
+  "omp_threads": 4,
+  "snapshot_interval": 50,
+  "precision_intervals": [
+    1,
+    2,
+    5,
+    10,
+    20,
+    50,
+    100
+  ],
+  "slice_plane": "XY",
+  "slice_position": 1000,
+  "io_sync": "buffered",
+  "common": {
+    "order": 2,
+    "lx": 2000,
+    "ly": 2000,
+    "lz": 2000,
+    "implem": "makutu",
+    "mesh": "cartesian",
+    "method": "sem",
+    "dt": 0.001,
+    "timemax": 1.5
+  },
+  "sizes": [
+    {
+      "name": "S",
+      "ex": 10,
+      "ey": 10,
+      "ez": 10
+    },
+    {
+      "name": "M",
+      "ex": 15,
+      "ey": 15,
+      "ez": 15
+    },
+    {
+      "name": "L",
+      "ex": 20,
+      "ey": 20,
+      "ez": 20
+    }
+  ],
+  "receivers_file": "./data/receivers.csv"
+}

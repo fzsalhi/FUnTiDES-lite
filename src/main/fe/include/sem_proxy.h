@@ -33,13 +33,33 @@ using Clock = std::chrono::steady_clock;
 inline double seconds(Clock::time_point start) {
   return std::chrono::duration<double>(Clock::now() - start).count();
 }
+std::uintmax_t finish(std::ofstream& stream, const std::filesystem::path& path,
+                     bool durable, double& fsync_s);
+struct FFTMetrics {
+  double prepare_s = 0, plan_s = 0, h2d_s = 0, compute_s = 0;
+  double d2h_s = 0, write_s = 0, total_s = 0, fsync_s = 0;
+  std::uintmax_t h2d_bytes = 0, d2h_bytes = 0, output_bytes = 0;
+};
 struct Metrics {
   double compute_s = 0, receiver_sample_s = 0, snapshot_write_s = 0;
   double sismo_write_s = 0, other_processing_s = 0, fsync_s = 0, run_s = 0;
   std::uintmax_t snapshot_bytes = 0, sismo_bytes = 0;
   int snapshot_count = 0, completed_steps = 0;
+  double stats_compute_s = 0, stats_copy_s = 0, stats_write_s = 0;
+  double sismo_stats_s = 0, sismo_stats_copy_s = 0, sismo_stats_write_s = 0;
+  double slice_setup_s = 0, slice_extract_s = 0, slice_copy_s = 0, slice_write_s = 0;
+  std::uintmax_t stats_bytes = 0, sismo_stats_bytes = 0, slice_bytes = 0;
+  std::uintmax_t stats_transfer_bytes = 0;
+  int slice_count = 0;
+  FFTMetrics fft;
 };
 }  // namespace tp1
+
+#ifdef SEMPROXY_ENABLE_CUFFT
+tp1::FFTMetrics computeSismoFFTcuFFT(const arrayReal& traces, int nReceivers,
+                                   int nSamples, float dt,
+                                   const std::string& fftFile, bool durable);
+#endif
 
 /* Streaming statistics (Welford's algorithm): constant memory*/
 
@@ -51,7 +71,7 @@ struct StreamStats
   double minVal = std::numeric_limits<double>::max();
   double maxVal = std::numeric_limits<double>::lowest();
 
-  void add(double x)
+  KOKKOS_INLINE_FUNCTION void add(double x)
   {
     n++;
     if (x < minVal) minVal = x;
@@ -60,7 +80,27 @@ struct StreamStats
     mean += delta / n;
     m2 += delta * (x - mean);
   }
-  double variance() const { return n > 0 ? m2 / n : 0.0; }
+  KOKKOS_INLINE_FUNCTION double variance() const { return n > 0 ? m2 / n : 0.0; }
+  KOKKOS_INLINE_FUNCTION void merge(const StreamStats& b) {
+    if (!b.n) return;
+    if (!n) { *this = b; return; }
+    const double delta = b.mean - mean;
+    const long total = n + b.n;
+    m2 += b.m2 + delta * delta * (double(n) * b.n / total);
+    mean += delta * (double(b.n) / total);
+    n = total;
+    if (b.minVal < minVal) minVal = b.minVal;
+    if (b.maxVal > maxVal) maxVal = b.maxVal;
+  }
+};
+
+struct PressureReduction {
+  using value_type = StreamStats;
+  arrayReal pressure;
+  int column;
+  KOKKOS_INLINE_FUNCTION void init(value_type& value) const { value = StreamStats{}; }
+  KOKKOS_INLINE_FUNCTION void join(value_type& dst, const value_type& src) const { dst.merge(src); }
+  KOKKOS_INLINE_FUNCTION void operator()(const int n, value_type& value) const { value.add(pressure(n, column)); }
 };
 
 
@@ -115,6 +155,8 @@ class SEMproxy
   float find_cfl_dt(float cfl_factor);
   void saveSnapshot(int timestep);
   void sampleReceivers(int timestep);
+  void updateReceiverStatistics(int timestep);
+  void saveSlice(int timestep);
   void writeMetrics(double initial_s, double total_s) const;
   // In-situ statistics of one pressure column computed on the device with
   // Kokkos::parallel_reduce. It must be public: nvcc forbids extended
@@ -184,7 +226,22 @@ class SEMproxy
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;
   int stats_count_ = 0;
-  std::vector<StreamStats> sismo_stats_;  // one entry per receiver
+  Kokkos::View<StreamStats*, Kokkos::DefaultExecutionSpace::memory_space> receiver_stats_device_;
+  Kokkos::View<StreamStats, Kokkos::DefaultExecutionSpace::memory_space> pressure_stats_device_;
+  Kokkos::View<StreamStats, Kokkos::HostSpace> pressure_stats_host_;
+  Kokkos::View<float*, Kokkos::HostSpace> stats_host_column_;
+  std::string sismo_stats_file_;
+  std::string stats_file_;
+  bool receiver_stats_enabled_ = false, keep_receiver_traces_ = true;
+  int slice_interval_ = 0;
+  std::string slice_plane_, slice_folder_;
+  float slice_requested_ = 0, slice_coordinate_ = 0;
+  vectorInt slice_nodes_;
+  Kokkos::View<float*, Kokkos::DefaultExecutionSpace::memory_space> slice_values_;
+  Kokkos::View<float*, Kokkos::HostSpace> slice_host_values_;
+  bool slice_coords_written_ = false;
+  void initSlice();
+  void saveReceiverStatistics();
   std::ofstream stats_out_;
   float domain_size_[3] = {0};
   // snapshots

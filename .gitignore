@@ -288,3 +288,11 @@ scripts/benchmarks/plots_combined/
 !/tp1/benchmarks/plots/**/binary_vs_csv_snapshot_*.png
 /tp1/visualisation/data/benchmark/
 /tp1/visualisation/images/benchmark/
+
+!/tp2/
+!/tp2/**/
+!/tp2/**/*.py
+!/tp2/**/*.png
+!/stats/tp3/analyse_snapshots_cpm.py
+/tp2/benchmarks/results/details/
+/tp2/data/

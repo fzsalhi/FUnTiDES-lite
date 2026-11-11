@@ -21,6 +21,11 @@ class SemProxyOptions
   std::string stats_file = "";
   // In-situ statistics mode: cpu | gpu | hostcopy
   std::string stats_mode = "cpu";
+  std::string sismo_stats_file;
+  int slice_interval = 0;
+  std::string slice_plane = "XY";
+  float slice_position = 1000.f;
+  std::string slice_folder = "tp2/data/slices";
   // TP3 in-situ processing: one option per part ("none" = disabled)
   std::string insitu_viz = "none";       // part 1: in-situ visualization
   std::string insitu_compress = "none";  // part 2: compression
@@ -88,13 +93,22 @@ class SemProxyOptions
       throw std::runtime_error("output format must be csv|bin|both");
   if (io_sync != "buffered" && io_sync != "fsync")
     throw std::runtime_error("io-sync must be buffered|fsync");
-  if (!record_receivers && (!sismo_file.empty() || !fft_file.empty() || stats_interval > 0))
+  if (!record_receivers && (!sismo_file.empty() || !fft_file.empty()))
     throw std::runtime_error("receiver outputs/statistics require --record-receivers=true");
   if (is_snapshots && snap_folder.empty())
     throw std::runtime_error("snap-folder must not be empty");
 
   if (is_snapshots && snap_time_interval <= 0)
     throw std::runtime_error("snap-time-interval must be > 0");
+  if (stats_interval < 0 || slice_interval < 0)
+    throw std::runtime_error("stats-interval and slice-interval must be >= 0");
+  if (!record_receivers && !sismo_stats_file.empty())
+    throw std::runtime_error("sismo-stats-file requires record-receivers");
+  if (slice_plane != "XY" && slice_plane != "XZ" && slice_plane != "YZ")
+    throw std::runtime_error("slice-plane must be XY|XZ|YZ");
+  if (!std::isfinite(slice_position) || slice_position < 0 ||
+      slice_position > (slice_plane == "XY" ? lz : slice_plane == "XZ" ? ly : lx))
+    throw std::runtime_error("slice-position must be inside the domain");
 
   CompressConfig cc;
   std::string err;
@@ -211,6 +225,16 @@ class SemProxyOptions
         ("stats-mode",
         "In-situ stats mode: cpu|gpu|hostcopy (default cpu)",
         cxxopts::value<std::string>(o.stats_mode))
+        ("sismo-stats-file", "Streaming receiver statistics CSV",
+        cxxopts::value<std::string>(o.sismo_stats_file))
+        ("slice-interval", "Time steps between binary slices (0 = disabled)",
+        cxxopts::value<int>(o.slice_interval))
+        ("slice-plane", "Slice plane: XY|XZ|YZ",
+        cxxopts::value<std::string>(o.slice_plane))
+        ("slice-position", "Requested slice coordinate in meters (nearest nodal plane)",
+        cxxopts::value<float>(o.slice_position))
+        ("slice-folder", "Binary slice output folder",
+        cxxopts::value<std::string>(o.slice_folder))
         ("fft-file",
         "Output CSV file for the in-situ cuFFT spectra",
         cxxopts::value<std::string>(o.fft_file))

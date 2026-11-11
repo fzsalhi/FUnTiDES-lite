@@ -22,11 +22,11 @@ if(COMPILE_SEM)
         SEMPROXY_ENABLE_CUFFT
     )
 
-    target_link_libraries(semproxy
-      PRIVATE
-        CUDA::cufft_static_nocallback
-        CUDA::cudart_static
-    )
+    if(TARGET CUDA::cufft_static_nocallback)
+      target_link_libraries(semproxy PRIVATE CUDA::cufft_static_nocallback CUDA::cudart_static)
+    else()
+      target_link_libraries(semproxy PRIVATE CUDA::cufft CUDA::cudart)
+    endif()
   endif()
 
   target_include_directories(semproxy
