@@ -32,6 +32,9 @@ Le CPU utilise OpenMP avec 4 threads. Le GPU utilise Kokkos CUDA pour la simulat
 Depuis la racine du dépôt, avec l’environnement CUDA et le dossier `build-cuda` utilisés au TP1. Il faut Python avec NumPy et Gnuplot pour le post-traitement.
 
 ```bash
+export PATH="/usr/local/cuda-13.4/bin:/usr/local/cuda/bin:$PATH"
+export LD_LIBRARY_PATH="/usr/local/cuda-13.4/lib64:/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+command -v nvcc && \
 cmake -S . -B build-openmp -DCMAKE_BUILD_TYPE=Release -DUSE_KOKKOS=ON -DUSE_VECTOR=OFF -DENABLE_CUDA=OFF -DKokkos_ENABLE_CUDA=OFF -DCOMPILE_FD=OFF -DSEMPROXY_ENABLE_CUFFT=OFF && \
 cmake --build build-openmp --target semproxy -j 4 && \
 cmake -S . -B build-cuda -DCMAKE_BUILD_TYPE=Release -DUSE_KOKKOS=ON -DUSE_VECTOR=OFF -DENABLE_CUDA=ON -DCOMPILE_FD=OFF -DSEMPROXY_ENABLE_CUFFT=ON && \
