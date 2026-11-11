@@ -1,0 +1,64 @@
+{
+  "theory": {
+    "snapshot_exponent": 3,
+    "cfl_steps_exponent": 1,
+    "cfl_compute_exponent": 4,
+    "output_fixed_step_interval_exponent": 4,
+    "output_fixed_physical_interval_exponent": 3,
+    "slice_exponent": 2
+  },
+  "measurements": [
+    {
+      "size": "S",
+      "elements": 10.0,
+      "nodes": 9261.0,
+      "dt_s": 0.019267823547124863,
+      "steps": 77.0,
+      "compute_s": 0.041858866000000015,
+      "one_pressure_field_bytes": 37044.0,
+      "output_bytes": 1227878.0,
+      "snapshot_count": 30.0
+    },
+    {
+      "size": "M",
+      "elements": 15.0,
+      "nodes": 29791.0,
+      "dt_s": 0.012845214456319809,
+      "steps": 116.0,
+      "compute_s": 0.20326167600000003,
+      "one_pressure_field_bytes": 119164.0,
+      "output_bytes": 3937868.0,
+      "snapshot_count": 30.0
+    },
+    {
+      "size": "L",
+      "elements": 20.0,
+      "nodes": 68921.0,
+      "dt_s": 0.009633911773562431,
+      "steps": 155.0,
+      "compute_s": 0.6179011280000002,
+      "one_pressure_field_bytes": 275684.0,
+      "output_bytes": 9103028.0,
+      "snapshot_count": 30.0
+    }
+  ],
+  "target_nodes": 19000000000,
+  "pressure_bytes": 76000000000,
+  "coordinates_once_bytes": 228000000000,
+  "pressure_buffers_bytes": 152000000000,
+  "slice_pressure_bytes": 28481469.43560795,
+  "projection_note": "Modele a ordre fixe ; champ et coordonnees float32. Les debits buffered ne sont pas des debits physiques du disque.",
+  "measured_exponents": {
+    "one_pressure_field_bytes": 2.8947790278010723,
+    "steps": 1.0094242222697243,
+    "compute_s": 3.8846542257325907
+  },
+  "target_elements": 1333.7008243609719,
+  "predicted_cfl_steps": 10337,
+  "fixed_step_interval": 50,
+  "fixed_physical_interval_s": 0.05,
+  "predicted_snapshots_fixed_steps": 207,
+  "predicted_snapshots_fixed_physical": 30,
+  "bytes_fixed_step_interval": 15960000000000,
+  "bytes_fixed_physical_interval": 2508000000000
+}
