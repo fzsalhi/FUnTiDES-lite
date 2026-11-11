@@ -35,6 +35,64 @@ void computeSismoFFTcuFFT(const std::vector<float>& signals,
                           const std::string& fftFile);
 #endif
 
+#include <algorithm>
+#include <cstring>
+#include <iomanip>
+#include <sstream>
+#include <stdexcept>
+#include <system_error>
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+
+namespace tp1 {
+std::string jsonString(const std::string& value) {
+  std::ostringstream out;
+  out << '"';
+  for (unsigned char c : value) {
+    if (c == '"' || c == '\\') out << '\\' << c;
+    else if (c < 32) out << "\\u" << std::hex << std::setw(4)
+                         << std::setfill('0') << static_cast<int>(c) << std::dec;
+    else out << c;
+  }
+  out << '"';
+  return out.str();
+}
+
+std::uintmax_t finish(std::ofstream& stream, const std::filesystem::path& path,
+                     bool durable, double& fsync_s) {
+  stream.close();
+  if (!stream) throw std::runtime_error("Output failed: " + path.string());
+  if (durable) {
+    const auto start = Clock::now();
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) throw std::system_error(errno, std::generic_category(), path.string());
+    const int result = ::fsync(fd);
+    const int saved_errno = errno;
+    const int close_result = ::close(fd);
+    if (result != 0) throw std::system_error(saved_errno, std::generic_category(), "fsync");
+    if (close_result != 0) throw std::system_error(errno, std::generic_category(), "close");
+    fsync_s += seconds(start);
+  }
+  return std::filesystem::file_size(path);
+}
+
+void writeFloat32(std::ofstream& stream, const std::vector<float>& values) {
+  static_assert(sizeof(float) == 4, "TP1 binary format requires IEEE float32");
+  const std::uint16_t endian = 1;
+  if (*reinterpret_cast<const unsigned char*>(&endian) == 1) {
+    stream.write(reinterpret_cast<const char*>(values.data()), values.size() * 4);
+  } else {
+    for (float value : values) {
+      char bytes[4];
+      std::memcpy(bytes, &value, 4);
+      std::reverse(bytes, bytes + 4);
+      stream.write(bytes, 4);
+    }
+  }
+}
+}  // namespace tp1
+
 using namespace SourceAndReceiverUtils;
 SEMproxy::SEMproxy(const SemProxyOptions& opt)
 {
@@ -63,6 +121,10 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     rcv_coords_.push_back(rcv_coord_);  // pas de fichier : ancien recepteur unique
   else
     rcv_coords_ = readReceivers(opt.rcv_file);
+  for (const auto& receiver : rcv_coords_)
+    for (int d = 0; d < 3; ++d)
+      if (!std::isfinite(receiver[d]) || receiver[d] < 0 || receiver[d] > domain_size_[d])
+        throw std::runtime_error("Receiver coordinates must be finite and inside the domain");
   sismo_file_ = opt.sismo_file;
   fft_file_ = opt.fft_file;
   stats_interval_ = opt.stats_interval;
@@ -147,6 +209,12 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   is_snapshots_ = opt.is_snapshots;
   snap_time_interval_ = opt.snap_time_interval;
   snap_folder_ = opt.snap_folder;
+  snap_format_ = opt.snap_format;
+  sismo_format_ = opt.sismo_format;
+  metrics_file_ = opt.metrics_file;
+  durable_outputs_ = opt.io_sync == "fsync";
+  record_receivers_ = opt.record_receivers;
+  quiet_ = opt.quiet;
   cout << boolalpha;
   bool isElastic = isElastic_;
   const SolverFactory::methodType methodType = getMethod(opt.method);
@@ -225,12 +293,28 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
     dt_ = opt.dt;
   }
   timemax_ = opt.timemax;
+  if (!std::isfinite(dt_) || dt_ <= 0 || double(timemax_) / dt_ > std::numeric_limits<int>::max())
+    throw std::runtime_error("Invalid time step or too many time steps");
   num_sample_ = timemax_ / dt_;
+  if (num_sample_ < 1)
+    throw std::runtime_error("timemax must cover at least one time step");
   m_solver = SolverFactory::createSolver(methodType, implemType, meshType,
                                          modelLocation, physicType, order);
   m_solver->computeFEInit(*m_mesh, sponge_size, opt.surface_sponge,
                           opt.taper_delta);
   initFiniteElem();
+  // Precompute the interpolation stencil on the host. Sampling itself runs in
+  // the execution space so CUDA does not migrate the field to the CPU at every step.
+  const int points = m_mesh->getNumberOfPointsPerElement();
+  receiver_nodes_ = allocateArray2D<arrayInt>(rcv_coords_.size(), points, "receiverNodes");
+  for (std::size_t r = 0; r < rcv_coords_.size(); ++r)
+    for (int k = 0; k <= order; ++k)
+      for (int j = 0; j <= order; ++j)
+        for (int i = 0; i <= order; ++i) {
+          const int q = i + j * (order + 1) + k * (order + 1) * (order + 1);
+          receiver_nodes_(r, q) = m_mesh->globalNodeIndex(rhsElementRcv[r], i, j, k);
+        }
+  Kokkos::fence();
   std::cout << "Number of node is " << m_mesh->getNumberOfNodes() << std::endl;
   std::cout << "Number of element is " << m_mesh->getNumberOfElements()
             << std::endl;
@@ -244,182 +328,97 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   std::cout << "Time step is " << dt_ << "s" << std::endl;
   std::cout << "Simulated time is " << timemax_ << "s" << std::endl;
 }
+void SEMproxy::sampleReceivers(int timestep)
+{
+  auto pressure = pnGlobal;
+  auto nodes = receiver_nodes_;
+  auto weights = rhsWeightsRcv;
+  auto traces = pnAtReceiver;
+  const int column = i1;  // updatePressureField writes the new solution here
+  const int points = m_mesh->getNumberOfPointsPerElement();
+  Kokkos::parallel_for("sample_receivers", rcv_coords_.size(), KOKKOS_LAMBDA(int r) {
+    float value = 0;
+    for (int q = 0; q < points; ++q)
+      value += pressure(nodes(r, q), column) * weights(r, q);
+    traces(r, timestep) = value;
+  });
+}
+
 void SEMproxy::run()
 {
-  time_point<system_clock> startComputeTime, startOutputTime, startSaveTime,
-      totalComputeTime, totalOutputTime, totalSaveTime;
-  SEMsolverDataAcoustic solverData(i1, i2, myRHSTerm, pnGlobal, rhsElement,
-                                   rhsWeights);
-  for (int indexTimeSample = 0; indexTimeSample < num_sample_;
-       indexTimeSample++)
+  Kokkos::fence();
+  const auto runStart = tp1::Clock::now();
+  SEMsolverDataAcoustic solverData(i1, i2, myRHSTerm, pnGlobal, rhsElement, rhsWeights);
+  for (int step = 0; step < num_sample_; ++step)
   {
-    startComputeTime = system_clock::now();
-    m_solver->computeOneStep(dt_, indexTimeSample, solverData);
-    totalComputeTime += system_clock::now() - startComputeTime;
-    startOutputTime = system_clock::now();
-    if (indexTimeSample % 50 == 0)
-    {
-      m_solver->outputSolutionValues(indexTimeSample, i1, rhsElement[0],
-                                     pnGlobal, "pnGlobal");
-    }
-    // Save pressure at each receiver
-    const int order = m_mesh->getOrder();
-    // sismos : meme calcul qu'avant, repete pour chaque recepteur r
-    for (int r = 0; r < (int)rcv_coords_.size(); r++)
-    {
-      float varnp1 = 0.0;
-      for (int i = 0; i < order + 1; i++)
-      {
-        for (int j = 0; j < order + 1; j++)
-        {
-          for (int k = 0; k < order + 1; k++)
-          {
-            // noeud (i,j,k) de la maille du recepteur r
-            int nodeIdx = m_mesh->globalNodeIndex(rhsElementRcv[r], i, j, k);
-            int globalNodeOnElement =
-                i + j * (order + 1) + k * (order + 1) * (order + 1);
-            // pression du noeud x poids d'interpolation du recepteur r
-            varnp1 += pnGlobal(nodeIdx, i2) *
-                      rhsWeightsRcv(r, globalNodeOnElement);
-          }
-        }
-      }
-      // row r = seismogram of receiver r, column = time step
-      pnAtReceiver(r, indexTimeSample) = varnp1;
-      // update at every time step: the statistics must cover the whole signal
-      if (stats_interval_ > 0) sismo_stats_[r].add(varnp1);
-    }
+    const auto computeStart = tp1::Clock::now();
+    m_solver->computeOneStep(dt_, step, solverData);
+    Kokkos::fence();  // account for device work in the compute stage
+    metrics_.compute_s += tp1::seconds(computeStart);
+    metrics_.completed_steps = step + 1;
 
-          
-      if (is_snapshots_ && indexTimeSample % snap_time_interval_ == 0)         
-    {
-      startSaveTime = system_clock::now();
-     if (!compress_no_csv_) saveSnapshot(indexTimeSample);
-      totalSaveTime += system_clock::now() - startSaveTime;
+    if (record_receivers_) {
+      const auto sampleStart = tp1::Clock::now();
+      sampleReceivers(step);
+      Kokkos::fence();
+      metrics_.receiver_sample_s += tp1::seconds(sampleStart);
     }
-    // statistiques in situ : apres computeOneStep, i1 contient le champ le plus recent
-    if (stats_interval_ > 0 && indexTimeSample % stats_interval_ == 0)
-      {
-       if (stats_mode_ == "gpu")
-        computePressureStatistics(i1, indexTimeSample);
-      else if (stats_mode_ == "hostcopy")
-        computePressureStatisticsHostCopy(i1, indexTimeSample);
-      else
-        computePressureStatisticsCPU(i1, indexTimeSample);
-     }
-     // TP3: single entry point of the in-situ processing. At this point,
-    // column i1 holds the newest field. A false return means a clean stop.
-    if (!runInSituProcessing(indexTimeSample)) break;
+    const auto otherStart = tp1::Clock::now();
+    if (!quiet_ && step % 50 == 0)
+      m_solver->outputSolutionValues(step, i1, rhsElement[0], pnGlobal, "pnGlobal");
+    if (stats_interval_ > 0)
+      for (std::size_t r = 0; r < rcv_coords_.size(); ++r)
+        sismo_stats_[r].add(pnAtReceiver(r, step));
+    metrics_.other_processing_s += tp1::seconds(otherStart);
+
+    if (is_snapshots_ && step % snap_time_interval_ == 0 && !compress_no_csv_)
+      saveSnapshot(step);
+
+    const auto processingStart = tp1::Clock::now();
+    if (stats_interval_ > 0 && step % stats_interval_ == 0) {
+      if (stats_mode_ == "gpu") computePressureStatistics(i1, step);
+      else if (stats_mode_ == "hostcopy") computePressureStatisticsHostCopy(i1, step);
+      else computePressureStatisticsCPU(i1, step);
+    }
+    const bool keepRunning = runInSituProcessing(step);
+    Kokkos::fence();
+    metrics_.other_processing_s += tp1::seconds(processingStart);
+    if (!keepRunning) break;
     swap(i1, i2);
-    auto tmp = solverData.m_i1;
-    solverData.m_i1 = solverData.m_i2;
-    solverData.m_i2 = tmp;
-    totalOutputTime += system_clock::now() - startOutputTime;
+    std::swap(solverData.m_i1, solverData.m_i2);
   }
-  #ifdef SEMPROXY_ENABLE_CUFFT
-  if (!fft_file_.empty())
-  {
-    const int nReceivers =
-        static_cast<int>(rcv_coords_.size());
-
-    std::vector<float> signals(
-        static_cast<std::size_t>(nReceivers) *
-        static_cast<std::size_t>(num_sample_));
-
-    for (int r = 0; r < nReceivers; ++r)
-    {
-      for (int t = 0; t < num_sample_; ++t)
-      {
-        signals[
-            static_cast<std::size_t>(r) * num_sample_ + t] =
-            pnAtReceiver(r, t);
-      }
-    }
-
-    computeSismoFFTcuFFT(
-        signals,
-        nReceivers,
-        num_sample_,
-        dt_,
-        fft_file_);
+#ifdef SEMPROXY_ENABLE_CUFFT
+  if (!fft_file_.empty()) {
+    std::vector<float> signals(rcv_coords_.size() * metrics_.completed_steps);
+    for (std::size_t r = 0; r < rcv_coords_.size(); ++r)
+      for (int t = 0; t < metrics_.completed_steps; ++t)
+        signals[r * metrics_.completed_steps + t] = pnAtReceiver(r, t);
+    computeSismoFFTcuFFT(signals, rcv_coords_.size(), metrics_.completed_steps, dt_, fft_file_);
   }
-  #endif
-  float kerneltime_ms = time_point_cast<microseconds>(totalComputeTime)
-                            .time_since_epoch()
-                            .count();
-  float outputtime_ms =
-      time_point_cast<microseconds>(totalOutputTime).time_since_epoch().count();
-  cout << "------------------------------------------------ " << endl;
-  cout << "\n---- Elapsed Kernel Time : " << kerneltime_ms / 1E6 << " seconds."
-       << endl;
-  cout << "---- Elapsed Output Time : " << outputtime_ms / 1E6 << " seconds."
-       << endl;    
-  
-  
+#endif
   if (insitu_compress_ != "none") compressSeismograms();
   if (insitu_extra_ == "steering")
-  {
-    const double avgUs =
-        steer_reads_ > 0 ? 1000.0 * steer_total_ms_ / steer_reads_ : 0.0;
-    cout << "---- Steering : " << steer_reads_ << " reads (every "
-         << steer_interval_ << " steps), total " << steer_total_ms_
-         << " ms, average " << avgUs << " us per read." << endl;
-  }
-
-    // final in-situ statistics of each seismogram
+    cout << "---- Steering : " << steer_reads_ << " reads, total "
+         << steer_total_ms_ << " ms." << endl;
   if (stats_interval_ > 0)
-    for (size_t r = 0; r < sismo_stats_.size(); r++)
+    for (std::size_t r = 0; r < sismo_stats_.size(); ++r)
       cout << "[In-situ sismo] rcv=" << r << " n=" << sismo_stats_[r].n
-           << " min=" << sismo_stats_[r].minVal
-           << " max=" << sismo_stats_[r].maxVal
+           << " min=" << sismo_stats_[r].minVal << " max=" << sismo_stats_[r].maxVal
            << " moyenne=" << sismo_stats_[r].mean
            << " variance=" << sismo_stats_[r].variance() << endl;
-    cout << "---- Elapsed Stats Time : " << stats_total_ms_ / 1E3
-         << " seconds (" << stats_count_ << " calls)." << endl;
-    
-  cout << "------------------------------------------------ " << endl;
-  // Save all receiver seismograms to CSV
-  if (!sismo_file_.empty())
-  {
-    startSaveTime = system_clock::now();
-    bool sismoSaved = false;
-    {
-      std::ofstream sismoFile(sismo_file_);
-      if (!sismoFile)
-      {
-        std::cerr << "Error: cannot open sismo file: "
-                  << sismo_file_ << std::endl;
-      }
-      else
-      {
-        sismoFile << "time";
-        for (int r = 0; r < (int)rcv_coords_.size(); r++)
-        {
-          sismoFile << ",receiver_" << r;
-        }
-        sismoFile << '\n';
-        sismoFile << std::setprecision(9);
-        for (int t = 0; t < num_sample_; t++)
-        {
-          sismoFile << t * dt_;
-          for (int r = 0; r < (int)rcv_coords_.size(); r++)
-          {
-            sismoFile << "," << pnAtReceiver(r, t);
-          }
-          sismoFile << '\n';
-        }
-        sismoSaved = true;
-      }
-    }
-    totalSaveTime += system_clock::now() - startSaveTime;
-    if (sismoSaved)
-      std::cout << "Seismograms saved to " << sismo_file_ << std::endl;
-  }
-  float savetime_ms =
-      time_point_cast<microseconds>(totalSaveTime).time_since_epoch().count();
-  cout << "---- Elapsed Save Time : " << savetime_ms / 1E6 << " seconds."
-       << endl;
+  cout << "---- Elapsed Stats Time : " << stats_total_ms_ / 1E3
+       << " seconds (" << stats_count_ << " calls)." << endl;
+  if (!sismo_file_.empty()) saveSeismograms();
+  Kokkos::fence();
+  metrics_.run_s = tp1::seconds(runStart);
+  cout << "---- Elapsed Kernel Time : " << metrics_.compute_s << " seconds." << endl;
+  cout << "---- Elapsed Output Time : "
+       << metrics_.receiver_sample_s + metrics_.snapshot_write_s + metrics_.other_processing_s
+       << " seconds." << endl;
+  cout << "---- Elapsed Save Time : " << metrics_.snapshot_write_s + metrics_.sismo_write_s
+       << " seconds." << endl;
 }
+
 // Initialize arrays
 void SEMproxy::init_arrays()
 {
@@ -448,9 +447,9 @@ void SEMproxy::init_source()
   int ex = nb_elements_[0];
   int ey = nb_elements_[1];
   int ez = nb_elements_[2];
-  int lx = domain_size_[0];
-  int ly = domain_size_[1];
-  int lz = domain_size_[2];
+  float lx = domain_size_[0];
+  float ly = domain_size_[1];
+  float lz = domain_size_[2];
   // Get source element index
   int source_index = floor((src_coord_[0] * ex) / lx) +
                      floor((src_coord_[1] * ey) / ly) * ex +
@@ -516,9 +515,9 @@ void SEMproxy::init_source()
   for (int r = 0; r < (int)rcv_coords_.size(); r++)
   {
     // 1. maille qui contient le recepteur r
-    int receiver_index = floor((rcv_coords_[r][0] * ex) / lx) +
-                         floor((rcv_coords_[r][1] * ey) / ly) * ex +
-                         floor((rcv_coords_[r][2] * ez) / lz) * ey * ex;
+    int receiver_index = std::min(ex - 1, int(floor((rcv_coords_[r][0] * ex) / lx))) +
+                         std::min(ey - 1, int(floor((rcv_coords_[r][1] * ey) / ly))) * ex +
+                         std::min(ez - 1, int(floor((rcv_coords_[r][2] * ez) / lz))) * ey * ex;
     rhsElementRcv[r] = receiver_index;
     cout << "Receiver " << r << " is in element " << receiver_index << endl;
     // 2. coordonnees des 8 coins de cette maille
@@ -589,44 +588,169 @@ float SEMproxy::find_cfl_dt(float cfl_factor)
   float dt = cfl_factor * min_spacing / (sqrtDim3 * v_max);
   return dt;
 }
+namespace fs = std::filesystem;
+
 void SEMproxy::saveSnapshot(int timestep)
 {
-  const int nbNodes = m_mesh->getNumberOfNodes();
-  std::filesystem::create_directories(snap_folder_);
-  char filename[256];
-  snprintf(filename, sizeof(filename), "%s/snapshot_it_%06d.csv",
-           snap_folder_.c_str(), timestep);
-  std::ofstream file(filename);
-  if (!file.is_open())
-    throw std::runtime_error("Impossible d'ouvrir le fichier snapshot CSV.");
-  file << "x,y,z,pressure\n";
-  file << std::setprecision(9);
-   // Steering: when a slice plane is active, keep only the nodes of the plane
-  // closest to the requested position. All the nodes of one plane share the
-  // same coordinate up to rounding, hence the small tolerance.
-  double sliceDist = 0.0;
-  if (slice_axis_ >= 0)
-  {
-    double dmin = std::numeric_limits<double>::max();
-    for (int n = 0; n < nbNodes; ++n)
-      dmin = std::min(dmin, std::abs(m_mesh->nodeCoord(n, slice_axis_) -
-                                     slice_value_));
-    sliceDist = dmin + 1e-5 * (1.0 + std::abs(slice_value_));
+  Kokkos::fence();
+  const auto start = tp1::Clock::now();
+  fs::create_directories(snap_folder_);
+  const int count = m_mesh->getNumberOfNodes();
+  std::vector<int> nodes;
+  nodes.reserve(count);
+  double distance = 0;
+  if (slice_axis_ >= 0) {
+    distance = std::numeric_limits<double>::max();
+    for (int n = 0; n < count; ++n)
+      distance = std::min(distance, std::abs(m_mesh->nodeCoord(n, slice_axis_) - slice_value_));
+    distance += 1e-5 * (1 + std::abs(slice_value_));
   }
-  for (int n = 0; n < nbNodes; ++n)
-  {
+  for (int n = 0; n < count; ++n)
+    if (slice_axis_ < 0 || std::abs(m_mesh->nodeCoord(n, slice_axis_) - slice_value_) <= distance)
+      nodes.push_back(n);
 
-    if (slice_axis_ >= 0 &&
-        std::abs(m_mesh->nodeCoord(n, slice_axis_) - slice_value_) > sliceDist)
-      continue;
-    file << m_mesh->nodeCoord(n, 0) << ','
-         << m_mesh->nodeCoord(n, 1) << ','
-         << m_mesh->nodeCoord(n, 2) << ','
-         << pnGlobal(n, i2) << '\n';
+  std::ostringstream stem;
+  stem << "snapshot_it_" << std::setw(6) << std::setfill('0') << timestep;
+  const fs::path base = fs::path(snap_folder_) / stem.str();
+  auto finish = [&](std::ofstream& out, const fs::path& path) {
+    metrics_.snapshot_bytes += tp1::finish(out, path, durable_outputs_, metrics_.fsync_s);
+  };
+  std::string coordsName;
+  if (snap_format_ != "csv") {
+    coordsName = slice_axis_ >= 0 ? "coords_" + stem.str() + ".bin" : "coords.bin";
+    if (slice_axis_ >= 0 || !coords_written_) {
+      std::vector<float> coords(nodes.size() * 3);
+      for (std::size_t k = 0; k < nodes.size(); ++k)
+        for (int d = 0; d < 3; ++d) coords[k * 3 + d] = m_mesh->nodeCoord(nodes[k], d);
+      const auto path = fs::path(snap_folder_) / coordsName;
+      std::ofstream out(path, std::ios::binary);
+      tp1::writeFloat32(out, coords);
+      finish(out, path);
+      if (slice_axis_ < 0) coords_written_ = true;
+    }
+    std::vector<float> pressure(nodes.size());
+    for (std::size_t k = 0; k < nodes.size(); ++k) pressure[k] = pnGlobal(nodes[k], i1);
+    const auto path = base.string() + ".bin";
+    std::ofstream out(path, std::ios::binary);
+    tp1::writeFloat32(out, pressure);
+    finish(out, path);
   }
-  if (!file)
-    throw std::runtime_error("Erreur pendant l'ecriture du snapshot CSV.");
+  if (snap_format_ != "bin") {
+    const auto path = base.string() + ".csv";
+    std::ofstream out(path);
+    out << "x,y,z,pressure\n" << std::setprecision(std::numeric_limits<float>::max_digits10);
+    for (int n : nodes)
+      out << m_mesh->nodeCoord(n, 0) << ',' << m_mesh->nodeCoord(n, 1) << ','
+          << m_mesh->nodeCoord(n, 2) << ',' << pnGlobal(n, i1) << '\n';
+    finish(out, path);
+  }
+  const auto path = base.string() + ".json";
+  std::ofstream meta(path);
+  meta << std::setprecision(17)
+       << "{\"schema\":\"funtides.snapshot.v1\",\"dtype\":\"<f4\",\"count\":" << nodes.size()
+       << ",\"step\":" << timestep << ",\"time_s\":" << (timestep + 1) * double(dt_)
+       << ",\"dt_s\":" << dt_ << ",\"pressure_column\":\"new\",\"coordinates\":"
+       << tp1::jsonString(coordsName) << "}\n";
+  finish(meta, path);
+  ++metrics_.snapshot_count;
+  metrics_.snapshot_write_s += tp1::seconds(start);
 }
+
+void SEMproxy::saveSeismograms()
+{
+  Kokkos::fence();
+  const auto start = tp1::Clock::now();
+  fs::path base(sismo_file_);
+  if (!base.parent_path().empty()) fs::create_directories(base.parent_path());
+  auto finish = [&](std::ofstream& out, const fs::path& path) {
+    metrics_.sismo_bytes += tp1::finish(out, path, durable_outputs_, metrics_.fsync_s);
+  };
+  if (sismo_format_ != "bin") {
+    auto path = base;
+    if (sismo_format_ == "both") path.replace_extension(".csv");
+    std::ofstream out(path);
+    out << "time";
+    for (std::size_t r = 0; r < rcv_coords_.size(); ++r) out << ",receiver_" << r;
+    out << '\n' << std::setprecision(17);
+    for (int t = 0; t < metrics_.completed_steps; ++t) {
+      out << (t + 1) * double(dt_);
+      for (std::size_t r = 0; r < rcv_coords_.size(); ++r) out << ',' << pnAtReceiver(r, t);
+      out << '\n';
+    }
+    finish(out, path);
+  }
+  if (sismo_format_ != "csv") {
+    auto path = base;
+    if (sismo_format_ == "both") path.replace_extension(".bin");
+    std::ofstream out(path, std::ios::binary);
+    // Sample-major blocks: no assumption about the LayoutLeft/Right of the Kokkos view.
+    std::vector<float> block;
+    for (int t = 0; t < metrics_.completed_steps;) {
+      const int end = std::min(t + 1024, metrics_.completed_steps);
+      block.clear();
+      block.reserve((end - t) * rcv_coords_.size());
+      for (; t < end; ++t)
+        for (std::size_t r = 0; r < rcv_coords_.size(); ++r) block.push_back(pnAtReceiver(r, t));
+      tp1::writeFloat32(out, block);
+    }
+    finish(out, path);
+  }
+  auto path = base;
+  path.replace_extension(".json");
+  std::ofstream meta(path);
+  meta << std::setprecision(17)
+       << "{\"schema\":\"funtides.seismograms.v1\",\"dtype\":\"<f4\",\"layout\":\"sample-major\","
+       << "\"samples\":" << metrics_.completed_steps << ",\"dt_s\":" << dt_
+       << ",\"time_start_s\":" << dt_ << ",\"receivers\":[";
+  for (std::size_t r = 0; r < rcv_coords_.size(); ++r) {
+    if (r) meta << ',';
+    meta << '[' << rcv_coords_[r][0] << ',' << rcv_coords_[r][1] << ',' << rcv_coords_[r][2] << ']';
+  }
+  meta << "]}\n";
+  finish(meta, path);
+  metrics_.sismo_write_s += tp1::seconds(start);
+}
+
+void SEMproxy::writeMetrics(double initial_s, double total_s) const
+{
+  if (metrics_file_.empty()) return;
+  const fs::path path(metrics_file_);
+  if (!path.parent_path().empty()) fs::create_directories(path.parent_path());
+  std::ofstream out(path);
+  const std::string space = Kokkos::DefaultExecutionSpace::name();
+  const bool gpu = space == "Cuda" || space == "HIP" || space == "SYCL";
+  out << std::setprecision(17)
+      << "{\n  \"schema\": \"funtides.metrics.v1\",\n"
+      << "  \"backend\": " << tp1::jsonString(gpu ? "gpu" : "cpu")
+      << ",\n  \"execution_space\": " << tp1::jsonString(space)
+      << ",\n  \"compiler\": " << tp1::jsonString(__VERSION__)
+      << ",\n  \"pressure_bytes_per_value\": 4,\n  \"nodes\": " << m_mesh->getNumberOfNodes()
+      << ",\n  \"elements\": " << m_mesh->getNumberOfElements()
+      << ",\n  \"order\": " << m_mesh->getOrder()
+      << ",\n  \"steps\": " << metrics_.completed_steps
+      << ",\n  \"receivers\": " << (record_receivers_ ? rcv_coords_.size() : 0)
+      << ",\n  \"dt_s\": " << dt_ << ",\n  \"requested_time_s\": " << timemax_
+      << ",\n  \"simulated_time_s\": " << metrics_.completed_steps * double(dt_)
+      << ",\n  \"snapshot_format\": " << tp1::jsonString(snap_format_)
+      << ",\n  \"sismo_format\": " << tp1::jsonString(sismo_format_)
+      << ",\n  \"io_sync\": " << tp1::jsonString(durable_outputs_ ? "fsync" : "buffered")
+      << ",\n  \"initial_s\": " << initial_s << ",\n  \"total_s\": " << total_s
+      << ",\n  \"run_s\": " << metrics_.run_s
+      << ",\n  \"compute_s\": " << metrics_.compute_s
+      << ",\n  \"receiver_sample_s\": " << metrics_.receiver_sample_s
+      << ",\n  \"snapshot_write_s\": " << metrics_.snapshot_write_s
+      << ",\n  \"sismo_write_s\": " << metrics_.sismo_write_s
+      << ",\n  \"other_processing_s\": " << metrics_.other_processing_s
+      << ",\n  \"fsync_s\": " << metrics_.fsync_s
+      << ",\n  \"snapshot_count\": " << metrics_.snapshot_count
+      << ",\n  \"snapshot_bytes\": " << metrics_.snapshot_bytes
+      << ",\n  \"sismo_bytes\": " << metrics_.sismo_bytes
+      << ",\n  \"raw_output_bytes\": " << metrics_.snapshot_bytes + metrics_.sismo_bytes
+      << "\n}\n";
+  out.close();
+  if (!out) throw std::runtime_error("Cannot write metrics: " + metrics_file_);
+}
+
 // sismos : lit le fichier des recepteurs.
 // Une ligne = un recepteur "x,y,z" (virgules, espaces ou ';' acceptes).
 // Les lignes vides, les commentaires '#' et un eventuel en-tete texte
@@ -638,8 +762,10 @@ std::vector<std::array<float, 3>> SEMproxy::readReceivers(
   if (!in) throw std::runtime_error("Cannot open receivers file: " + filename);
   std::vector<std::array<float, 3>> rcvs;
   std::string line;
+  int lineNumber = 0;
   while (std::getline(in, line))
   {
+    ++lineNumber;
     // 1. on enleve le commentaire eventuel (tout ce qui suit '#')
     auto hash = line.find('#');
     if (hash != std::string::npos) line.erase(hash);
@@ -651,7 +777,19 @@ std::vector<std::array<float, 3>> SEMproxy::readReceivers(
     //    un en-tete texte, la lecture echoue et on passe a la suivante
     std::istringstream iss(line);
     std::array<float, 3> c;
-    if (iss >> c[0] >> c[1] >> c[2]) rcvs.push_back(c);
+    if (line.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+    if (iss >> c[0] >> c[1] >> c[2]) {
+      std::string extra;
+      if (iss >> extra)
+        throw std::runtime_error("Extra receiver column at line " + std::to_string(lineNumber));
+      rcvs.push_back(c);
+    } else {
+      std::istringstream header(line);
+      std::string x, y, z, extra;
+      if (rcvs.empty() && (header >> x >> y >> z) && x == "x" && y == "y" && z == "z" && !(header >> extra))
+        continue;
+      throw std::runtime_error("Invalid receiver at " + filename + ":" + std::to_string(lineNumber));
+    }
   }
   if (rcvs.empty())
     throw std::runtime_error("No receiver found in file: " + filename);

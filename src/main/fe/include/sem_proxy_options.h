@@ -55,6 +55,12 @@ class SemProxyOptions
   bool is_snapshots = false;
   int snap_time_interval = 50;
   std::string snap_folder = "../data";
+  std::string snap_format = "csv";  // csv | bin | both (legacy default preserved)
+  std::string sismo_format = "csv";
+  std::string metrics_file;
+  std::string io_sync = "buffered";  // buffered | fsync
+  bool record_receivers = true;
+  bool quiet = false;
   std::string visu_plane = "XY";
   float visu_position = 0.5f;
   int visu_width = 256;
@@ -74,6 +80,18 @@ class SemProxyOptions
 
   if (lx <= 0 || ly <= 0 || lz <= 0)
     throw std::runtime_error("lx/ly/lz must be > 0");
+
+  if (!std::isfinite(dt) || dt <= 0 || !std::isfinite(timemax) || timemax <= 0)
+    throw std::runtime_error("dt and timemax must be finite and > 0");
+  for (const auto& format : {snap_format, sismo_format})
+    if (format != "csv" && format != "bin" && format != "both")
+      throw std::runtime_error("output format must be csv|bin|both");
+  if (io_sync != "buffered" && io_sync != "fsync")
+    throw std::runtime_error("io-sync must be buffered|fsync");
+  if (!record_receivers && (!sismo_file.empty() || !fft_file.empty() || stats_interval > 0))
+    throw std::runtime_error("receiver outputs/statistics require --record-receivers=true");
+  if (is_snapshots && snap_folder.empty())
+    throw std::runtime_error("snap-folder must not be empty");
 
   if (is_snapshots && snap_time_interval <= 0)
     throw std::runtime_error("snap-time-interval must be > 0");
@@ -166,12 +184,24 @@ class SemProxyOptions
         cxxopts::value<std::string>(o.rcv_file))(
         "sismo-file", "Output CSV file for the sismos (default sismos.csv)",
         cxxopts::value<std::string>(o.sismo_file))(
-        "is-snapshots", "Save pressure snapshots (binary)",
+        "is-snapshots", "Save pressure snapshots",
         cxxopts::value<bool>(o.is_snapshots))(
         "snap-time-interval", "Number of time steps between two snapshots",
         cxxopts::value<int>(o.snap_time_interval))
         ("snap-folder", "Output folder for snapshots",
         cxxopts::value<std::string>(o.snap_folder))
+        ("snap-format", "Snapshot format: csv|bin|both",
+        cxxopts::value<std::string>(o.snap_format))
+        ("sismo-format", "Seismogram format: csv|bin|both",
+        cxxopts::value<std::string>(o.sismo_format))
+        ("metrics-file", "Write structured execution metrics to JSON",
+        cxxopts::value<std::string>(o.metrics_file))
+        ("io-sync", "Output completion: buffered|fsync",
+        cxxopts::value<std::string>(o.io_sync))
+        ("record-receivers", "Sample receivers at every time step",
+        cxxopts::value<bool>(o.record_receivers))
+        ("quiet", "Disable pressure diagnostics in the time loop",
+        cxxopts::value<bool>(o.quiet))
         ("stats-interval",
         "Number of time steps between two in-situ statistics (0 = disabled)",
         cxxopts::value<int>(o.stats_interval))

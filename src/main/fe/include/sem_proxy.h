@@ -23,6 +23,24 @@
 #include "compression_config.hpp"
 #include "tp3_slice_cpu.hpp"
 
+
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+
+namespace tp1 {
+using Clock = std::chrono::steady_clock;
+inline double seconds(Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
+}
+struct Metrics {
+  double compute_s = 0, receiver_sample_s = 0, snapshot_write_s = 0;
+  double sismo_write_s = 0, other_processing_s = 0, fsync_s = 0, run_s = 0;
+  std::uintmax_t snapshot_bytes = 0, sismo_bytes = 0;
+  int snapshot_count = 0, completed_steps = 0;
+};
+}  // namespace tp1
+
 /* Streaming statistics (Welford's algorithm): constant memory*/
 
 struct StreamStats
@@ -96,6 +114,8 @@ class SEMproxy
    */
   float find_cfl_dt(float cfl_factor);
   void saveSnapshot(int timestep);
+  void sampleReceivers(int timestep);
+  void writeMetrics(double initial_s, double total_s) const;
   // In-situ statistics of one pressure column computed on the device with
   // Kokkos::parallel_reduce. It must be public: nvcc forbids extended
   // lambdas (KOKKOS_LAMBDA) inside private/protected member functions.
@@ -171,6 +191,12 @@ class SEMproxy
   bool is_snapshots_;
   int snap_time_interval_;
   std::string snap_folder_;
+  std::string snap_format_, sismo_format_, metrics_file_;
+  bool durable_outputs_ = false, record_receivers_ = true, quiet_ = false;
+  bool coords_written_ = false;
+  tp1::Metrics metrics_;
+  arrayInt receiver_nodes_;
+  void saveSeismograms();
   // physics
   bool isElastic_;
   // time parameters
