@@ -1,4 +1,4 @@
-# TP3 – Personne 3 : compression sans perte (RLE / delta) et pilotage (steering)
+# TP3 : compression sans perte (RLE / delta) et pilotage (steering)
 
 Cette partie ajoute au pipeline in-situ de FUnTiDES-lite :
 
