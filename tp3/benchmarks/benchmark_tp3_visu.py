@@ -31,6 +31,18 @@ def write_csv(path, rows):
         writer.writerows(rows)
 
 
+def plot_results(source, comparison=None):
+    command = [
+        sys.executable,
+        str(HERE / 'plot_tp3_mesures.py'),
+        '--input',
+        str(source),
+    ]
+    if comparison:
+        command += ['--compare-input', str(comparison)]
+    subprocess.run(command, check=True)
+
+
 def execute(command, env, report):
     start = perf_counter()
     result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
@@ -179,11 +191,25 @@ def main():
     parser.add_argument('--skip-validation', action='store_true')
     parser.add_argument('--modes', help='Modes separes par des virgules')
     parser.add_argument('--plot-only', type=Path)
+    parser.add_argument(
+        '--compare-input', type=Path,
+        help='Mesures avec l autre mode io-sync pour comparer fsync',
+    )
     args = parser.parse_args()
     if args.plot_only:
-        subprocess.run([sys.executable, str(HERE / 'plot_tp3_mesures.py'), '--input',
-            str(args.plot_only)], check=True)
+        plot_results(args.plot_only, args.compare_input)
         return
+    if args.compare_input:
+        args.compare_input = args.compare_input.resolve()
+        if not args.compare_input.is_file():
+            parser.error('Fichier de comparaison absent')
+        with args.compare_input.open(newline='') as stream:
+            previous = list(csv.DictReader(stream))
+        expected_policy = 'buffered' if args.io_sync == 'fsync' else 'fsync'
+        if {r['io_sync'] for r in previous} != {expected_policy}:
+            parser.error('La comparaison exige buffered et fsync')
+        if {r['backend'] for r in previous} != {args.expect_backend}:
+            parser.error('Backends des campagnes differents')
     if (args.runs < 3 or args.warmups < 0 or args.threads < 1 or (args.interval < 1)
         or (args.width < 0) or (args.height < 0) or (args.width == 1)
         or (args.height == 1)):
@@ -318,7 +344,10 @@ def main():
         if r['mode'] == 'baseline'])
     maps = []
     reference_checks = []
-    for size in sizes:
+    reference_sizes = (
+        sizes if any(mode.startswith('maps_') for mode in modes) else []
+    )
+    for size in reference_sizes:
         report = details / size[0] / 'maps_reference'
         report.mkdir(parents=True)
         with tempfile.TemporaryDirectory(dir=data_root, prefix='maps-') as temporary:
@@ -378,8 +407,7 @@ def main():
             raise RuntimeError(
                 'Ecart CPU/GPU ou P3/P6 excessif : voir le CSV de validation'
             )
-    subprocess.run([sys.executable, str(HERE / 'plot_tp3_mesures.py'), '--input',
-        str(output)], check=True)
+    plot_results(output, args.compare_input)
     print(f'Mesures : {output}')
 
 
