@@ -6,8 +6,9 @@ if(COMPILE_SEM)
   add_executable(semproxy
     src/main.cc
     src/sem_proxy.cc
-    src/tp3_ppm_visu.cc
-    src/tp3_slice_cpu.cc
+    ${CMAKE_SOURCE_DIR}/tp3/src/tp3_ppm_visu.cc
+    ${CMAKE_SOURCE_DIR}/tp3/src/tp3_slice.cc
+    ${CMAKE_SOURCE_DIR}/tp3/src/tp3_maps.cc
   )
   if(SEMPROXY_ENABLE_CUFFT)
     find_package(CUDAToolkit REQUIRED)
@@ -32,6 +33,7 @@ if(COMPILE_SEM)
   target_include_directories(semproxy
     PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/include
+      ${CMAKE_SOURCE_DIR}/tp3/include
       ${CMAKE_SOURCE_DIR}/external/cxxopts
   )
 

@@ -73,17 +73,17 @@ printf 'snap_interval=20\nslice=z:0.0\nsnapshot_now=1\n' > /tmp/steer.txt   # pe
 printf 'stop=1\n' > /tmp/steer.txt                                           # arrêt propre
 
 # Benchmark complet (1 warm-up + 5 répétitions, médiane, 4 threads OpenMP)
-python3 scripts/benchmarks/bench_tp3_compress.py --sizes S --output stats/tp3/bench_compress/S
+python3 scripts/benchmarks/bench_tp3_compress.py --sizes S --output tp3/compression/bench_compress/S
 python3 scripts/benchmarks/bench_tp3_compress.py --sizes M --runs 3 \
-  --configs baseline,raw+rle,int16+rle,int8+rle,steer_k10 --output stats/tp3/bench_compress/M
+  --configs baseline,raw+rle,int16+rle,int8+rle,steer_k10 --output tp3/compression/bench_compress/M
 ```
 
 ```bash
 python3 scripts/benchmarks/bench_tp3_compress.py --sizes L --runs 3 \
-  --configs baseline,raw+rle,int16+rle,int8+rle,int8+rle_nocsv,steer_k10 --output stats/tp3/bench_compress/L
+  --configs baseline,raw+rle,int16+rle,int8+rle,int8+rle_nocsv,steer_k10 --output tp3/compression/bench_compress/L
 ```
 
-Maillages : S = 20³, M = 40³, L = 50³ éléments (ordre 2), `--timemax 0.5` (500 pas), un snapshot tous les 50 pas (10 snapshots), 4 threads OpenMP, CPU. S : 5 répétitions ; M et L : 3 répétitions (1 warm-up ignoré, médiane). Les résultats bruts sont dans `stats/tp3/bench_compress/{S,M,L}/`.
+Maillages : S = 20³, M = 40³, L = 50³ éléments (ordre 2), `--timemax 0.5` (500 pas), un snapshot tous les 50 pas (10 snapshots), 4 threads OpenMP, CPU. S : 5 répétitions ; M et L : 3 répétitions (1 warm-up ignoré, médiane). Les résultats bruts sont dans `tp3/compression/bench_compress/{S,M,L}/`.
 
 ## 5. Résultats
 
@@ -166,7 +166,7 @@ Le coût décroît en 1/k et reste inférieur à 0,1 % du Kernel Time même avec
 
 ## 7. Fichiers
 
-- `src/utils/include/rle.hpp` : RLE et DELTA.
+- `tp3/include/rle.hpp` : RLE et DELTA.
 - `src/main/fe/include/sem_proxy_options.h`, `sem_proxy.h`, `src/main/fe/src/sem_proxy.cc` : options, `compressSnapshot`, `compressSeismograms`, `steerFromFile`, plan de coupe dans `saveSnapshot`.
 - `scripts/benchmarks/bench_tp3_compress.py` : benchmark.
-- `stats/tp3/bench_compress/` : résultats.
+- `tp3/compression/bench_compress/` : résultats.

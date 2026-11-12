@@ -7,7 +7,7 @@ analyze_snapshots.py n'est PAS modifie : memes statistiques, meme histogramme,
 meme front d'onde, meme vitesse -> comparaison directe avec les resultats d'origine.
 
 Les .cpm ne contiennent que la pression. Les coordonnees sont reprises du
-snapshot ORIGINAL (--orig-dir), ou de --coords si tu le donnes (comme avant).
+snapshot ORIGINAL (--orig-dir), ou du parametre --coords.
 Hypothese : meme ordre des noeuds dans le .cpm et dans le snapshot original.
 
 Exemple :

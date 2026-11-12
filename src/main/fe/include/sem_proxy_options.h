@@ -72,9 +72,17 @@ class SemProxyOptions
   int visu_height = 256;
   std::string visu_format = "both";
   int visu_interval = 50;
-  std::string visu_folder = "tp3_images";
+  std::string visu_folder = "tp3/data/images";
   float visu_scale = 0.0f;
   bool visu_fsync = false;
+  std::string visu_backend = "cpu";
+  std::string visu_normalization = "local";
+  int visu_window = 8;
+  std::string insitu_maps = "none";
+  std::string maps_folder = "tp3/data/maps";
+  float maps_threshold = 0.01f;
+  int maps_reference_interval = 0;
+  bool maps_images = true;
   void validate() const
 {
   if (order < 1)
@@ -109,6 +117,19 @@ class SemProxyOptions
   if (!std::isfinite(slice_position) || slice_position < 0 ||
       slice_position > (slice_plane == "XY" ? lz : slice_plane == "XZ" ? ly : lx))
     throw std::runtime_error("slice-position must be inside the domain");
+  if (insitu_maps != "none" && insitu_maps != "all" && insitu_maps != "amplitude" &&
+      insitu_maps != "arrival" && insitu_maps != "energy")
+    throw std::runtime_error("insitu-maps must be none|amplitude|arrival|energy|all");
+  if (!std::isfinite(maps_threshold) || maps_threshold <= 0 || maps_reference_interval < 0)
+    throw std::runtime_error("maps-threshold must be positive and maps-reference-interval nonnegative");
+  if (visu_backend != "cpu" && visu_backend != "gpu")
+    throw std::runtime_error("visu-backend must be cpu|gpu");
+  if (visu_normalization != "local" && visu_normalization != "fixed" && visu_normalization != "running")
+    throw std::runtime_error("visu-normalization must be local|fixed|running");
+  if (visu_window < 1 || (visu_normalization == "fixed" && visu_scale <= 0))
+    throw std::runtime_error("Invalid normalization window or fixed scale");
+  if (insitu_maps != "none" && maps_folder.empty())
+    throw std::runtime_error("maps-folder must not be empty");
 
   CompressConfig cc;
   std::string err;
@@ -125,7 +146,7 @@ class SemProxyOptions
   if (cc.enabled && !is_snapshots)
     throw std::runtime_error("insitu-compress requires --is-snapshots");
 
-  if (insitu_viz == "ppm")
+  if (insitu_viz == "ppm" || (insitu_maps != "none" && maps_images))
   {
     if (mesh != "cartesian")
       throw std::runtime_error("PPM visualization requires cartesian mesh");
@@ -277,6 +298,14 @@ class SemProxyOptions
     ("visu-scale", "Fixed symmetric pressure scale (0 = automatic)",
         cxxopts::value<float>(o.visu_scale))
     ("visu-fsync", "Force fsync on each PPM output",
-        cxxopts::value<bool>(o.visu_fsync));
+        cxxopts::value<bool>(o.visu_fsync))
+    ("visu-backend", "Image computation: cpu|gpu", cxxopts::value<std::string>(o.visu_backend))
+    ("visu-normalization", "Pressure normalization: local|fixed|running", cxxopts::value<std::string>(o.visu_normalization))
+    ("visu-window", "Number of images in the running maximum window", cxxopts::value<int>(o.visu_window))
+    ("insitu-maps", "Accumulated maps: none|amplitude|arrival|energy|all", cxxopts::value<std::string>(o.insitu_maps))
+    ("maps-folder", "Map output folder", cxxopts::value<std::string>(o.maps_folder))
+    ("maps-threshold", "Absolute pressure threshold for first arrival", cxxopts::value<float>(o.maps_threshold))
+    ("maps-reference-interval", "Snapshot sampling interval for map comparison (0 disables)", cxxopts::value<int>(o.maps_reference_interval))
+    ("maps-images", "Write final map slices as P6 images", cxxopts::value<bool>(o.maps_images));
     }
 };

@@ -296,3 +296,10 @@ scripts/benchmarks/plots_combined/
 !/stats/tp3/analyse_snapshots_cpm.py
 /tp2/benchmarks/results/details/
 /tp2/data/
+
+!/tp3/
+!/tp3/**/
+!/tp3/**/*.py
+!/tp3/**/*.png
+/tp3/data/
+/tp3/benchmarks/results/details/

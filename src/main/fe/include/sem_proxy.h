@@ -21,7 +21,8 @@
 #include <array>
 #include "sem_proxy_options.h"
 #include "compression_config.hpp"
-#include "tp3_slice_cpu.hpp"
+#include "tp3_slice.hpp"
+#include "tp3_maps.hpp"
 
 
 #include <chrono>
@@ -51,6 +52,10 @@ struct Metrics {
   std::uintmax_t stats_bytes = 0, sismo_stats_bytes = 0, slice_bytes = 0;
   std::uintmax_t stats_transfer_bytes = 0;
   int slice_count = 0;
+  double ppm_setup_s=0, ppm_s=0, ppm_extract_s=0, ppm_color_s=0, ppm_copy_s=0;
+  double ppm_encode_s=0, ppm_write_s=0, ppm_fsync_s=0;
+  std::uintmax_t ppm_bytes=0, ppm_metrics_bytes=0, ppm_host_bytes=0;
+  int ppm_frames=0, ppm_images=0;
   FFTMetrics fft;
 };
 }  // namespace tp1
@@ -220,8 +225,13 @@ class SEMproxy
   std::string visu_folder_;
   float visu_scale_;
   bool visu_fsync_ = false;
+  std::string visu_backend_, visu_normalization_;
+  int visu_window_ = 8;
+  std::string maps_folder_;
+  bool maps_images_ = true;
+  std::unique_ptr<TP3Maps> maps_;
 
-  std::unique_ptr<TP3SliceCPU> visu_slice_;
+  std::unique_ptr<TP3Slice> visu_slice_;
   void savePPMSlice(int step, int column);
   int stats_interval_ = 0;  // intervalle des statistiques in situ
   double stats_total_ms_ = 0.0;

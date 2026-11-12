@@ -202,7 +202,12 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   visu_interval_ = opt.visu_interval;
   visu_folder_ = opt.visu_folder;
   visu_scale_ = opt.visu_scale;
-  visu_fsync_ = opt.visu_fsync;
+  visu_fsync_ = opt.visu_fsync || opt.io_sync == "fsync";
+  visu_backend_ = opt.visu_backend;
+  visu_normalization_ = opt.visu_normalization;
+  visu_window_ = opt.visu_window;
+  maps_folder_ = opt.maps_folder;
+  maps_images_ = opt.maps_images;
 
   if (insitu_viz_ != "none" && insitu_viz_ != "ppm")
       throw std::runtime_error("Unknown visualization mode: " + insitu_viz_);
@@ -281,20 +286,25 @@ SEMproxy::SEMproxy(const SemProxyOptions& opt)
   {
     throw std::runtime_error("Incorrect mesh type (SEMproxy ctor.)");
   }
-  if (insitu_viz_ == "ppm")
+  if (insitu_viz_ == "ppm" || (opt.insitu_maps != "none" && opt.maps_images))
   {
-      std::filesystem::create_directories(visu_folder_);
+      const auto setupStart=tp1::Clock::now();
+      if (insitu_viz_ == "ppm") std::filesystem::create_directories(visu_folder_);
 
-      visu_slice_ = std::make_unique<TP3SliceCPU>(
+      visu_slice_ = std::make_unique<TP3Slice>(
           *m_mesh,
           nb_elements_,
           domain_size_,
           visu_plane_,
           visu_position_,
           visu_width_,
-          visu_height_
+          visu_height_, visu_backend_, visu_normalization_, visu_window_
       );
+      Kokkos::fence();
+      metrics_.ppm_setup_s=tp1::seconds(setupStart);
   }
+  if (opt.insitu_maps != "none")
+      maps_=std::make_unique<TP3Maps>(m_mesh->getNumberOfNodes(),opt.insitu_maps,opt.maps_threshold,opt.maps_reference_interval);
   // time parameters
   if (opt.autodt)
   {
@@ -415,6 +425,13 @@ void SEMproxy::run()
     metrics_.fsync_s += metrics_.fft.fsync_s;
   }
 #endif
+  if (maps_) {
+    std::vector<float> coordinates(std::size_t(m_mesh->getNumberOfNodes())*3);
+    for(int n=0;n<m_mesh->getNumberOfNodes();++n)
+      for(int d=0;d<3;++d) coordinates[3*n+d]=m_mesh->nodeCoord(n,d);
+    maps_->save(maps_folder_,coordinates,metrics_.completed_steps,dt_,durable_outputs_,maps_images_?visu_slice_.get():nullptr);
+    metrics_.fsync_s+=maps_->metrics().fsync_s;
+  }
   if (insitu_compress_ != "none") compressSeismograms();
   if (insitu_extra_ == "steering")
     cout << "---- Steering : " << steer_reads_ << " reads, total "
@@ -793,7 +810,27 @@ void SEMproxy::writeMetrics(double initial_s, double total_s) const
       << ",\n  \"fft_h2d_bytes\": " << metrics_.fft.h2d_bytes
       << ",\n  \"fft_d2h_bytes\": " << metrics_.fft.d2h_bytes
       << ",\n  \"fft_output_bytes\": " << metrics_.fft.output_bytes
-      << ",\n  \"total_output_bytes\": " << metrics_.snapshot_bytes + metrics_.sismo_bytes + metrics_.stats_bytes + metrics_.sismo_stats_bytes + metrics_.slice_bytes + metrics_.fft.output_bytes
+      << ",\n  \"ppm_setup_s\": " << metrics_.ppm_setup_s
+      << ",\n  \"ppm_s\": " << metrics_.ppm_s
+      << ",\n  \"ppm_extract_s\": " << metrics_.ppm_extract_s
+      << ",\n  \"ppm_color_s\": " << metrics_.ppm_color_s
+      << ",\n  \"ppm_copy_s\": " << metrics_.ppm_copy_s
+      << ",\n  \"ppm_encode_s\": " << metrics_.ppm_encode_s
+      << ",\n  \"ppm_write_s\": " << metrics_.ppm_write_s
+      << ",\n  \"ppm_fsync_s\": " << metrics_.ppm_fsync_s
+      << ",\n  \"ppm_bytes\": " << metrics_.ppm_bytes
+      << ",\n  \"ppm_metrics_bytes\": " << metrics_.ppm_metrics_bytes
+      << ",\n  \"ppm_host_bytes\": " << metrics_.ppm_host_bytes
+      << ",\n  \"ppm_frames\": " << metrics_.ppm_frames
+      << ",\n  \"ppm_images\": " << metrics_.ppm_images
+      << ",\n  \"maps_update_s\": " << (maps_?maps_->metrics().update_s:0)
+      << ",\n  \"maps_copy_s\": " << (maps_?maps_->metrics().copy_s:0)
+      << ",\n  \"maps_write_s\": " << (maps_?maps_->metrics().write_s:0)
+      << ",\n  \"maps_render_s\": " << (maps_?maps_->metrics().render_s:0)
+      << ",\n  \"maps_memory_bytes\": " << (maps_?maps_->metrics().memory_bytes:0)
+      << ",\n  \"maps_reference_memory_bytes\": " << (maps_?maps_->metrics().reference_memory_bytes:0)
+      << ",\n  \"maps_bytes\": " << (maps_?maps_->metrics().bytes:0)
+      << ",\n  \"total_output_bytes\": " << metrics_.snapshot_bytes + metrics_.sismo_bytes + metrics_.stats_bytes + metrics_.sismo_stats_bytes + metrics_.slice_bytes + metrics_.fft.output_bytes + metrics_.ppm_bytes + metrics_.ppm_metrics_bytes + (maps_?maps_->metrics().bytes:0)
       << ",\n  \"raw_output_bytes\": " << metrics_.snapshot_bytes + metrics_.sismo_bytes
       << "\n}\n";
   out.close();
@@ -878,19 +915,9 @@ void SEMproxy::saveReceiverStatistics()
 void SEMproxy::initSlice()
 {
   const auto start = tp1::Clock::now();
-  const int axis = slice_plane_ == "XY" ? 2 : slice_plane_ == "XZ" ? 1 : 0;
-  const int total = m_mesh->getNumberOfNodes();
-  slice_coordinate_ = m_mesh->nodeCoord(0, axis);
-  for (int n = 1; n < total; ++n) {
-    const float coordinate = m_mesh->nodeCoord(n, axis);
-    const float distance = std::abs(coordinate - slice_requested_);
-    const float current = std::abs(slice_coordinate_ - slice_requested_);
-    if (distance < current || (distance == current && coordinate < slice_coordinate_))
-      slice_coordinate_ = coordinate;
-  }
-  std::vector<int> indices;
-  for (int n = 0; n < total; ++n)
-    if (m_mesh->nodeCoord(n, axis) == slice_coordinate_) indices.push_back(n);
+  const auto plane = SliceUtils::selectPlane(*m_mesh, slice_plane_, slice_requested_);
+  slice_coordinate_ = plane.coordinate;
+  const auto& indices = plane.nodes;
   slice_nodes_ = allocateVector<vectorInt>(indices.size(), "sliceNodes");
   for (std::size_t n = 0; n < indices.size(); ++n) slice_nodes_(n) = indices[n];
   slice_values_ = decltype(slice_values_)("sliceValues", indices.size());
@@ -903,13 +930,7 @@ void SEMproxy::saveSlice(int timestep)
 {
   Kokkos::fence();
   const auto extractStart = tp1::Clock::now();
-  auto nodes = slice_nodes_;
-  auto values = slice_values_;
-  auto pressure = pnGlobal;
-  const int column = i1;
-  Kokkos::parallel_for("ExtractSlice", nodes.extent(0), KOKKOS_LAMBDA(int n) {
-    values(n) = pressure(nodes(n), column);
-  });
+  SliceUtils::gather<Kokkos::DefaultExecutionSpace>(pnGlobal, i1, slice_nodes_, slice_values_);
   Kokkos::fence();
   metrics_.slice_extract_s += tp1::seconds(extractStart);
   const auto copyStart = tp1::Clock::now();
@@ -1024,6 +1045,7 @@ void SEMproxy::savePPMSlice(int step, int column)
 {
     if (!visu_slice_) return;
     Kokkos::fence();
+    const auto frameStart=tp1::Clock::now();
 
     std::ostringstream filename;
     filename << visu_folder_ << "/slice_" << visu_plane_ << "_it_"
@@ -1032,6 +1054,18 @@ void SEMproxy::savePPMSlice(int step, int column)
     const TP3FrameMetrics metrics = visu_slice_->savePPM(
         pnGlobal, column, filename.str(), visu_format_, visu_scale_, visu_fsync_);
 
+    metrics_.ppm_extract_s+=metrics.extract_ms/1000;
+    metrics_.ppm_color_s+=metrics.color_ms/1000;
+    metrics_.ppm_copy_s+=metrics.copy_ms/1000;
+    metrics_.ppm_host_bytes+=metrics.host_bytes;
+    ++metrics_.ppm_frames;
+    for(const auto& file:metrics.files) {
+      metrics_.ppm_bytes+=file.size_bytes; ++metrics_.ppm_images;
+      metrics_.ppm_encode_s+=file.encode_ms/1000;
+      metrics_.ppm_write_s+=file.write_ms/1000;
+      metrics_.ppm_fsync_s+=file.fsync_ms/1000;
+      metrics_.fsync_s+=file.fsync_ms/1000;
+    }
     const std::filesystem::path csv_path =
         std::filesystem::path(visu_folder_) / "visu_metrics.csv";
     const bool write_header = !std::filesystem::exists(csv_path) ||
@@ -1042,7 +1076,7 @@ void SEMproxy::savePPMSlice(int step, int column)
     if (write_header) {
         csv << "step,plane,format,width,height,size_bytes,extract_ms,color_ms,"
                "encode_ms,write_ms,fsync_ms,output_total_ms,frame_total_ms,"
-               "fsync_enabled,path\n";
+               "fsync_enabled,path,backend,normalization,scale,max_abs,copy_ms,host_bytes,time_s,position_m\n";
     }
     for (const auto& file : metrics.files) {
         csv << step << ',' << visu_plane_ << ',' << file.format << ','
@@ -1050,14 +1084,19 @@ void SEMproxy::savePPMSlice(int step, int column)
             << metrics.extract_ms << ',' << metrics.color_ms << ','
             << file.encode_ms << ',' << file.write_ms << ',' << file.fsync_ms << ','
             << file.total_ms << ',' << metrics.total_ms << ','
-            << (file.fsync_enabled ? 1 : 0) << ',' << file.path << '\n';
+            << (file.fsync_enabled ? 1 : 0) << ',' << file.path << ',' << visu_backend_ << ','
+            << visu_normalization_ << ',' << metrics.scale << ',' << metrics.max_abs << ','
+            << metrics.copy_ms << ',' << metrics.host_bytes << ',' << (step+1)*double(dt_) << ','
+            << visu_slice_->planeCoordinate() << '\n';
     }
     if (!csv) throw std::runtime_error("Error writing visualization metrics CSV");
+    metrics_.ppm_metrics_bytes=tp1::finish(csv,csv_path,visu_fsync_,metrics_.fsync_s);
+    metrics_.ppm_s+=tp1::seconds(frameStart);
 }
 
 bool SEMproxy::runInSituProcessing(int step)
 {
-  (void)step;  // unused until the parts are implemented
+  if (maps_) maps_->update(pnGlobal,i1,step);
 
   // Steering is read first, so that its commands apply from this step on
   if (insitu_extra_ == "steering")
@@ -1070,7 +1109,7 @@ bool SEMproxy::runInSituProcessing(int step)
   {
     if (step % visu_interval_ == 0)
     {
-      savePPMSlice(step, i2);
+      savePPMSlice(step, i1);
     }
   }
 
