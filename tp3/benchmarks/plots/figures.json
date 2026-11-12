@@ -1,0 +1,10 @@
+{
+  "source": "/autofs/unityaccount/cremi/warezqi002/FUnTiDES-lite/tp3/benchmarks/results/tp3_20261112T142957.977461Z_gpu.csv",
+  "figures": [
+    "ppm_formats.png",
+    "ppm_cpu_gpu.png",
+    "normalisation.png",
+    "cartes_cout.png",
+    "cartes_precision.png"
+  ]
+}
